@@ -11,7 +11,8 @@ from pack2serve.builder import ServerBuilder
 from pack2serve.cli import main
 from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, ModrinthDirectProvider
 from pack2serve.java import java_status, required_java_major
-from pack2serve.loader import create_loader_install_plan
+from pack2serve.loader import LoaderInstallPlan, create_loader_install_plan
+from pack2serve.installer import LoaderInstaller
 from pack2serve.parser import ModpackFormat, parse_modpack
 
 
@@ -121,6 +122,60 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertEqual(neoforge.kind, "installer-jar")
         self.assertIn("maven.neoforged.net", neoforge.download_url)
         self.assertIn("neoforge-21.1.233-installer.jar", neoforge.artifact_name)
+
+    def test_loader_installer_downloads_direct_server_jar_and_rewrites_start_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "fabric-server.jar"
+            source.write_bytes(b"fabric-server")
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            plan = LoaderInstallPlan(
+                loader="fabric",
+                loader_version="0.18.4",
+                minecraft_version="1.20.1",
+                kind="direct-server-jar",
+                download_url=source.as_uri(),
+                artifact_name="server.jar",
+                artifact_path="server.jar",
+                install_command=["download", source.as_uri(), "server.jar"],
+                launch_command=["java", "-Xmx4G", "-jar", "server.jar", "nogui"],
+                server_jar="server.jar",
+                notes=[],
+            )
+
+            result = LoaderInstaller().install(server_dir, plan)
+
+            self.assertEqual((server_dir / "server.jar").read_bytes(), b"fabric-server")
+            self.assertEqual(result.status, "installed")
+            self.assertTrue((server_dir / "start.ps1").read_text().find("server.jar") >= 0)
+
+    def test_loader_installer_downloads_installer_jar_without_running_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "forge-installer.jar"
+            source.write_bytes(b"installer")
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            plan = LoaderInstallPlan(
+                loader="forge",
+                loader_version="47.4.20",
+                minecraft_version="1.20.1",
+                kind="installer-jar",
+                download_url=source.as_uri(),
+                artifact_name="forge-installer.jar",
+                artifact_path="pack2serve/loaders/forge-installer.jar",
+                install_command=["java", "-jar", "pack2serve/loaders/forge-installer.jar", "--installServer"],
+                launch_command=["powershell", "-ExecutionPolicy", "Bypass", "-File", "start.ps1"],
+                server_jar=None,
+                notes=[],
+            )
+
+            result = LoaderInstaller().install(server_dir, plan)
+
+            self.assertEqual((server_dir / "pack2serve/loaders/forge-installer.jar").read_bytes(), b"installer")
+            self.assertEqual(result.status, "downloaded")
+            self.assertEqual(result.executed, False)
 
     def test_server_builder_copies_server_files_and_isolates_client_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -412,6 +467,39 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual((target / "mods/10-20.jar").read_bytes(), b"mirror-cli")
+
+    def test_cli_install_loader_reads_plan_and_downloads_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "server-source.jar"
+            source.write_bytes(b"server")
+            server_dir = tmp_path / "server"
+            plan_dir = server_dir / "pack2serve"
+            plan_dir.mkdir(parents=True)
+            plan = LoaderInstallPlan(
+                loader="fabric",
+                loader_version="0.18.4",
+                minecraft_version="1.20.1",
+                kind="direct-server-jar",
+                download_url=source.as_uri(),
+                artifact_name="server.jar",
+                artifact_path="server.jar",
+                install_command=["download", source.as_uri(), "server.jar"],
+                launch_command=["java", "-Xmx4G", "-jar", "server.jar", "nogui"],
+                server_jar="server.jar",
+                notes=[],
+            )
+            (plan_dir / "loader-install-plan.json").write_text(
+                json.dumps(plan.to_json_dict()),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(StringIO()):
+                exit_code = main(["install-loader", str(server_dir)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual((server_dir / "server.jar").read_bytes(), b"server")
+            self.assertTrue((plan_dir / "loader-install-result.json").exists())
 
 
 if __name__ == "__main__":

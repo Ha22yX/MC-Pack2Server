@@ -6,6 +6,7 @@ from pathlib import Path
 
 from pack2serve.builder import ServerBuilder
 from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider
+from pack2serve.installer import LoaderInstaller, load_loader_plan
 from pack2serve.parser import parse_modpack
 
 
@@ -27,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="No-key CurseForge mirror URL template with {projectID} and {fileID}",
     )
+
+    install_parser = subcommands.add_parser(
+        "install-loader", help="Download and optionally execute the generated loader install plan"
+    )
+    install_parser.add_argument("server_dir", type=Path)
+    install_parser.add_argument("--execute-installers", action="store_true")
 
     args = parser.parse_args(argv)
     if args.command == "inspect":
@@ -83,6 +90,17 @@ def main(argv: list[str] | None = None) -> int:
                 indent=2,
             )
         )
+        return 0
+
+    if args.command == "install-loader":
+        plan_path = args.server_dir / "pack2serve" / "loader-install-plan.json"
+        plan = load_loader_plan(plan_path)
+        result = LoaderInstaller().install(
+            args.server_dir,
+            plan,
+            execute_installers=args.execute_installers,
+        )
+        print(json.dumps(result.to_json_dict(), ensure_ascii=False, indent=2))
         return 0
 
     return 2

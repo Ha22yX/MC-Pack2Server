@@ -39,4 +39,16 @@ Use a no-key CurseForge mirror template:
 python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download --curseforge-mirror "https://mirror.example/curseforge/{projectID}/{fileID}/file.jar"
 ```
 
+Download the loader artifact for a generated server project:
+
+```powershell
+python -m pack2serve.cli install-loader "data\servers\example"
+```
+
+Run Forge/NeoForge installer jars after downloading them:
+
+```powershell
+python -m pack2serve.cli install-loader "data\servers\example" --execute-installers
+```
+
 See `docs/development/backend-mvp-status.md` for the current implementation status.

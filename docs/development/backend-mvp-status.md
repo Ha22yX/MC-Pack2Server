@@ -27,6 +27,9 @@ Current capabilities:
 - Fabric plans use the Fabric metadata API server launcher jar.
 - Forge plans use the MinecraftForge Maven installer jar.
 - NeoForge plans use the NeoForged Maven installer jar.
+- Download loader artifacts with `install-loader`.
+- Rewrite `start.ps1` automatically after direct server jar installation.
+- Optionally execute Forge/NeoForge installer jars with `--execute-installers`.
 
 ## CLI
 
@@ -54,6 +57,13 @@ Build a CurseForge ZIP with a no-key mirror template:
 python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download --curseforge-mirror "https://mirror.example/curseforge/{projectID}/{fileID}/file.jar"
 ```
 
+Download/install the generated loader plan:
+
+```powershell
+python -m pack2serve.cli install-loader "data\servers\example"
+python -m pack2serve.cli install-loader "data\servers\example" --execute-installers
+```
+
 ## Integration Samples
 
 The following sample packs were parsed and built into `data/servers/integration/`:
@@ -70,7 +80,7 @@ The following sample packs were parsed and built into `data/servers/integration/
 
 - Modrinth direct download is implemented, but it is only executed when `--download` is enabled.
 - CurseForge no-key mirror resolution supports template providers, but no default public mirror is bundled yet.
-- Loader installers are planned in `loader-install-plan.json`, including download URL and install command, but installer execution is not automated yet.
+- Loader artifacts can be downloaded, but Forge/NeoForge installer execution is only run when `--execute-installers` is provided.
 - `start.ps1` is a placeholder that expects `server.jar` to exist after loader installation.
 - Java is detected locally, but Pack2Serve does not yet install Java distributions.
 
@@ -78,9 +88,8 @@ The following sample packs were parsed and built into `data/servers/integration/
 
 Implement installer execution and runtime hosting:
 
-1. download loader installer/server launcher artifacts
-2. execute Fabric/Forge/NeoForge installer flows
-3. rewrite `start.ps1` after installer completion
-4. Java distribution installer/selector
-5. first-run validation and log analysis
-6. web API and panel integration
+1. Java distribution installer/selector
+2. first-run validation and log analysis
+3. client-only mod detection database
+4. web API and panel integration
+5. runtime process/container manager
