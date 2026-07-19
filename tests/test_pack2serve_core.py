@@ -163,6 +163,38 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertIn("pack2serve\\runtime\\java\\bin\\java.exe", start)
             self.assertTrue((server_dir / "pack2serve/java-install-result.json").exists())
 
+    def test_java_installer_adds_runtime_to_path_for_run_bat_start_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            archive_path = tmp_path / "jre.zip"
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("jdk-21/bin/java.exe", b"fake-java")
+            server_dir = tmp_path / "server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "start.ps1").write_text(
+                "$ErrorActionPreference = 'Stop'\n"
+                "& (Join-Path $PSScriptRoot 'run.bat')\n",
+                encoding="utf-8",
+            )
+            plan = JavaRuntimeInstallPlan(
+                required_major=21,
+                os="windows",
+                arch="x64",
+                kind="adoptium-jre-archive",
+                download_url=archive_path.as_uri(),
+                archive_path="pack2serve/java/jre.zip",
+                install_dir="pack2serve/runtime/java",
+                java_executable="pack2serve/runtime/java/bin/java.exe",
+                notes=[],
+            )
+
+            JavaInstaller().install(server_dir, plan)
+
+            start = (server_dir / "start.ps1").read_text(encoding="utf-8")
+            self.assertIn("$env:PATH", start)
+            self.assertIn("pack2serve\\runtime\\java\\bin", start)
+            self.assertIn("run.bat", start)
+
     def test_java_installer_rejects_unsafe_archive_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -255,6 +287,71 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual((server_dir / "pack2serve/loaders/forge-installer.jar").read_bytes(), b"installer")
             self.assertEqual(result.status, "downloaded")
             self.assertEqual(result.executed, False)
+
+    def test_loader_installer_rewrites_start_script_to_run_bat_after_installer_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "installer.jar"
+            source.write_bytes(b"installer")
+            fake_installer = tmp_path / "fake_installer.py"
+            fake_installer.write_text(
+                "from pathlib import Path\n"
+                "Path('run.bat').write_text('java @user_jvm_args.txt @libraries/example/win_args.txt nogui\\n')\n",
+                encoding="utf-8",
+            )
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            plan = LoaderInstallPlan(
+                loader="forge",
+                loader_version="47.4.20",
+                minecraft_version="1.20.1",
+                kind="installer-jar",
+                download_url=source.as_uri(),
+                artifact_name="forge-installer.jar",
+                artifact_path="pack2serve/loaders/forge-installer.jar",
+                install_command=["python", str(fake_installer)],
+                launch_command=["powershell", "-ExecutionPolicy", "Bypass", "-File", "start.ps1"],
+                server_jar=None,
+                notes=[],
+            )
+
+            result = LoaderInstaller().install(server_dir, plan, execute_installers=True)
+
+            self.assertEqual(result.status, "installed")
+            self.assertIn("run.bat", (server_dir / "start.ps1").read_text(encoding="utf-8"))
+
+    def test_loader_installer_rewrites_start_script_to_legacy_forge_jar_when_no_run_bat_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "installer.jar"
+            source.write_bytes(b"installer")
+            fake_installer = tmp_path / "fake_installer.py"
+            fake_installer.write_text(
+                "from pathlib import Path\n"
+                "Path('forge-1.12.2-14.23.5.2860.jar').write_bytes(b'forge')\n"
+                "Path('minecraft_server.1.12.2.jar').write_bytes(b'minecraft')\n",
+                encoding="utf-8",
+            )
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            plan = LoaderInstallPlan(
+                loader="forge",
+                loader_version="14.23.5.2860",
+                minecraft_version="1.12.2",
+                kind="installer-jar",
+                download_url=source.as_uri(),
+                artifact_name="forge-installer.jar",
+                artifact_path="pack2serve/loaders/forge-installer.jar",
+                install_command=["python", str(fake_installer)],
+                launch_command=["powershell", "-ExecutionPolicy", "Bypass", "-File", "start.ps1"],
+                server_jar=None,
+                notes=[],
+            )
+
+            result = LoaderInstaller().install(server_dir, plan, execute_installers=True)
+
+            self.assertEqual(result.status, "installed")
+            self.assertIn("forge-1.12.2-14.23.5.2860.jar", (server_dir / "start.ps1").read_text(encoding="utf-8"))
 
     def test_server_builder_copies_server_files_and_isolates_client_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -655,6 +752,30 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertTrue((server_dir / "pack2serve/validation-report.json").exists())
 
+    def test_cli_reconfigures_stdout_for_replacement_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "bad_output.py"
+            fake.write_text("import sys; sys.stdout.buffer.write(b'bad\\xae\\n')", encoding="utf-8")
+            output_path = tmp_path / "stdout.txt"
+
+            with output_path.open("w", encoding="ascii", errors="strict") as output:
+                with redirect_stdout(output):
+                    exit_code = main(
+                        [
+                            "validate-server",
+                            str(server_dir),
+                            "--command",
+                            "python",
+                            str(fake),
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("bad", output_path.read_text(encoding="utf-8"))
+
     def test_cli_accept_eula_requires_flag_and_updates_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -852,6 +973,83 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertEqual(result.status, "failed")
             self.assertTrue(any("permission" in hint.lower() for hint in result.hints))
+
+    def test_server_validator_detects_legacy_forge_java_incompatibility(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_legacy_forge.py"
+            fake.write_text(
+                "print('A problem occurred running the Server launcher.java.lang.reflect.InvocationTargetException')\n"
+                "print('Caused by: java.lang.ClassCastException: AppClassLoader cannot be cast to URLClassLoader')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "failed")
+            self.assertTrue(any("Java runtime" in hint for hint in result.hints))
+
+    def test_server_validator_hints_java_runtime_incompatibility_for_major_version_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_major.py"
+            fake.write_text(
+                "print('java.lang.IllegalArgumentException: Unsupported class file major version 70')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "failed")
+            self.assertTrue(any("Java runtime" in hint for hint in result.hints))
+
+    def test_server_validator_hints_missing_mod_exceptions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_missing_mods.py"
+            fake.write_text(
+                "print('net.minecraftforge.fml.common.MissingModsException: Mod requires [librarymod]')\n"
+                "print('Caused by: java.lang.NoClassDefFoundError: net/fabricmc/fabric/api/client/screen/v1/ScreenEvents')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "failed")
+            self.assertTrue(any("dependency" in hint.lower() for hint in result.hints))
+
+    def test_server_validator_replaces_invalid_output_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", "-c", "import sys; sys.stdout.buffer.write(b'bad\\xae\\n')"],
+                timeout_seconds=10,
+            )
+
+            self.assertIn("bad", result.combined_output)
+            self.assertEqual(result.status, "exited")
 
     def test_server_validator_detects_eula_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

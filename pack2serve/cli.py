@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from pack2serve.builder import ServerBuilder
@@ -14,6 +15,7 @@ from pack2serve.validator import ServerValidator
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_text_output()
     parser = argparse.ArgumentParser(prog="pack2serve")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
@@ -263,6 +265,13 @@ def _curseforge_providers(cache_dir: Path, templates: list[str]) -> list[CurseFo
         )
         for index, template in enumerate(templates)
     ]
+
+
+def _configure_text_output() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure:
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def _override_loader_url(plan_path: Path, url: str) -> None:

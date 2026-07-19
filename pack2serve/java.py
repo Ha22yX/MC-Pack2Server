@@ -80,13 +80,17 @@ class JavaInstaller:
     def _rewrite_start_script(self, root: Path, java_executable: str) -> None:
         start = root / "start.ps1"
         java_path = java_executable.replace("/", "\\")
+        java_bin = str(Path(java_path).parent)
+        path_line = f"$env:PATH = (Join-Path $PSScriptRoot '{java_bin}') + ';' + $env:PATH"
         replacement = f"$java = Join-Path $PSScriptRoot '{java_path}'"
         if start.exists():
             content = start.read_text(encoding="utf-8")
             if "$java = 'java'" in content:
                 content = content.replace("$java = 'java'", replacement)
+                if "$env:PATH" not in content:
+                    content = path_line + "\n" + content
             else:
-                content = replacement + "\n" + content
+                content = path_line + "\n" + content
             start.write_text(content, encoding="utf-8")
 
 

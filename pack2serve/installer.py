@@ -66,6 +66,8 @@ class LoaderInstaller:
                 stdout=proc.stdout,
                 stderr=proc.stderr,
             )
+            if result.status == "installed":
+                self._write_installer_start_script(root)
         else:
             result = LoaderInstallResult(
                 status="downloaded",
@@ -89,6 +91,26 @@ class LoaderInstaller:
             f"& $java @args -jar '{jar}' nogui\n",
             encoding="utf-8",
         )
+
+    def _write_installer_start_script(self, root: Path) -> None:
+        run_bat = root / "run.bat"
+        if run_bat.exists():
+            (root / "start.ps1").write_text(
+                "$ErrorActionPreference = 'Stop'\n"
+                "& (Join-Path $PSScriptRoot 'run.bat')\n",
+                encoding="utf-8",
+            )
+            return
+
+        legacy_jar = _find_legacy_forge_jar(root)
+        if legacy_jar:
+            (root / "start.ps1").write_text(
+                "$ErrorActionPreference = 'Stop'\n"
+                "$java = 'java'\n"
+                "$args = @('-Xms1G', '-Xmx4G')\n"
+                f"& $java @args -jar '{legacy_jar.name}' nogui\n",
+                encoding="utf-8",
+            )
 
     def _write_result(self, root: Path, result: LoaderInstallResult) -> None:
         out = root / "pack2serve" / "loader-install-result.json"
@@ -126,3 +148,12 @@ def _download(url: str, destination: Path) -> None:
         temp.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to download loader artifact {url}: {exc}") from exc
     temp.replace(destination)
+
+
+def _find_legacy_forge_jar(root: Path) -> Path | None:
+    candidates = sorted(
+        path
+        for path in root.glob("forge-*.jar")
+        if "installer" not in path.name.lower()
+    )
+    return candidates[0] if candidates else None

@@ -44,6 +44,8 @@ class ServerValidator:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         status: str | None = None
         try:
@@ -73,9 +75,12 @@ class ServerValidator:
                     output_parts.append(remaining_stdout)
             except subprocess.TimeoutExpired:
                 proc.kill()
-                remaining_stdout, _ = proc.communicate(timeout=5)
-                if remaining_stdout:
-                    output_parts.append(remaining_stdout)
+                try:
+                    remaining_stdout, _ = proc.communicate(timeout=5)
+                    if remaining_stdout:
+                        output_parts.append(remaining_stdout)
+                except subprocess.TimeoutExpired:
+                    status = status or "timed-out"
 
         output = "".join(output_parts)
         timed_out = status == "timed-out"
@@ -129,6 +134,14 @@ def _classify_output(output: str, return_code: int | None, timed_out: bool) -> s
         or "mod loading error" in lowered
         or "exception in thread" in lowered
         or "runtimeexception" in lowered
+        or "invocationtargetexception" in lowered
+        or "classcastexception" in lowered
+        or "loadingfailedexception" in lowered
+        or "mixintransformererror" in lowered
+        or "unsupported class file major version" in lowered
+        or "missingmodsexception" in lowered
+        or "noclassdeffounderror" in lowered
+        or "classnotfoundexception" in lowered
     ):
         return "failed"
     if "done (" in lowered and "for help" in lowered:
@@ -143,9 +156,19 @@ def _hints(output: str, return_code: int | None, timed_out: bool) -> list[str]:
     hints: list[str] = []
     if timed_out:
         hints.append("The process did not finish before the validation timeout.")
-    if "unsupported class file major version" in lowered:
-        hints.append("The selected Java runtime is probably too old for one or more mods.")
+    if (
+        "unsupported class file major version" in lowered
+        or "urlclassloader" in lowered
+        or "appclassloader" in lowered
+    ):
+        hints.append("The selected Java runtime is incompatible with this loader/mod set. Use java-plan.json.")
     if "missing mods" in lowered or "mod loading error" in lowered:
+        hints.append("A dependency may be missing or a client-only mod may be present.")
+    if (
+        "missingmodsexception" in lowered
+        or "noclassdeffounderror" in lowered
+        or "classnotfoundexception" in lowered
+    ) and not any("dependency" in hint.lower() for hint in hints):
         hints.append("A dependency may be missing or a client-only mod may be present.")
     if "agree to the eula" in lowered or ("eula" in lowered and "run the server" in lowered):
         hints.append("The Minecraft EULA may need to be accepted before startup can continue.")
