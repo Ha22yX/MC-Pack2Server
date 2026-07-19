@@ -104,6 +104,48 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(result.remote_files[0].project_id, 100)
             self.assertEqual(result.remote_files[0].file_id, 200)
 
+    def test_parse_curseforge_zip_attaches_modlist_slugs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.zip"
+            write_zip(
+                pack,
+                {
+                    "manifest.json": json.dumps(
+                        {
+                            "manifestType": "minecraftModpack",
+                            "manifestVersion": 1,
+                            "name": "Sample CF",
+                            "version": "2.0",
+                            "minecraft": {
+                                "version": "1.20.1",
+                                "modLoaders": [{"id": "fabric-0.18.4", "primary": True}],
+                            },
+                            "files": [
+                                {"projectID": 561885, "fileID": 6290217, "required": True},
+                                {"projectID": 1009556, "fileID": 5572389, "required": True},
+                            ],
+                            "overrides": "overrides",
+                        }
+                    ),
+                    "modlist.html": (
+                        '<ul class="mod-list">'
+                        '<li><a href="https://www.curseforge.com/minecraft/mc-mods/just-zoom">'
+                        "Just Zoom (by Keksuccino)</a></li>"
+                        '<li><a href="https://www.curseforge.com/minecraft/mc-mods/hide-experimental-warning">'
+                        "Hide Experimental Warning (by Serilum)</a></li>"
+                        "</ul>"
+                    ),
+                },
+            )
+
+            result = parse_modpack(pack)
+
+            self.assertEqual(result.remote_files[0].slug, "just-zoom")
+            self.assertEqual(result.remote_files[0].display_name, "Just Zoom")
+            self.assertEqual(result.remote_files[1].slug, "hide-experimental-warning")
+            self.assertEqual(result.remote_files[1].display_name, "Hide Experimental Warning")
+
     def test_required_java_major_maps_minecraft_versions(self) -> None:
         self.assertEqual(required_java_major("1.12.2"), 8)
         self.assertEqual(required_java_major("1.17.1"), 16)
@@ -555,6 +597,277 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual((target / "mods/100-200.jar").read_bytes(), b"curseforge-mirror")
             self.assertEqual(len(report.manual_actions), 0)
 
+    def test_server_builder_reports_curseforge_resolution_summary(self) -> None:
+        from pack2serve.downloader import ResolvedCurseForgeArtifact
+
+        class Provider:
+            name = "summary-provider"
+
+            def __init__(self, url: str):
+                self.url = url
+
+            def resolve(self, context):
+                return ResolvedCurseForgeArtifact(
+                    provider=self.name,
+                    project_id=context.project_id,
+                    file_id=context.file_id,
+                    file_name="summary.jar",
+                    download_url=self.url,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "summary.jar"
+            source.write_bytes(b"summary")
+            pack = tmp_path / "sample.zip"
+            write_zip(
+                pack,
+                {
+                    "manifest.json": json.dumps(
+                        {
+                            "manifestType": "minecraftModpack",
+                            "manifestVersion": 1,
+                            "name": "CF Summary",
+                            "version": "1.0.0",
+                            "minecraft": {
+                                "version": "1.20.1",
+                                "modLoaders": [{"id": "fabric-0.18.4", "primary": True}],
+                            },
+                            "files": [{"projectID": 100, "fileID": 200, "required": True}],
+                            "overrides": "overrides",
+                        }
+                    ),
+                },
+            )
+            target = tmp_path / "server"
+
+            report = ServerBuilder(
+                cache_dir=tmp_path / "cache",
+                download_remote=True,
+                curseforge_providers=[Provider(source.as_uri())],
+            ).build(pack, target)
+            persisted = json.loads((target / "pack2serve/build-report.json").read_text(encoding="utf-8"))
+
+            self.assertEqual((target / "mods/summary.jar").read_bytes(), b"summary")
+            self.assertEqual(len(report.manual_actions), 0)
+            self.assertEqual(persisted["curseforge_resolution"]["resolved"], 1)
+            self.assertEqual(persisted["curseforge_resolution"]["unresolved"], 0)
+            self.assertEqual(persisted["curseforge_resolution"]["providers"]["summary-provider"], 1)
+
+    def test_curseforge_api_provider_resolves_download_url(self) -> None:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+
+        from pack2serve.downloader import CurseForgeApiProvider, CurseForgeFileContext
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                if self.path == "/mods/561885/files/6290217/download-url":
+                    body = json.dumps({"data": "https://files.example/example.jar"}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            provider = CurseForgeApiProvider(
+                name="test-api",
+                base_url=f"http://127.0.0.1:{server.server_port}",
+            )
+
+            artifact = provider.resolve(
+                CurseForgeFileContext(project_id=561885, file_id=6290217, required=True)
+            )
+
+            self.assertIsNotNone(artifact)
+            assert artifact is not None
+            self.assertEqual(artifact.file_name, "example.jar")
+            self.assertEqual(artifact.download_url, "https://files.example/example.jar")
+            self.assertEqual(artifact.provider, "test-api")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_curseforge_maven_provider_resolves_slug_url(self) -> None:
+        from pack2serve.downloader import CurseForgeFileContext, CurseForgeMavenProvider
+
+        provider = CurseForgeMavenProvider(
+            name="test-maven",
+            base_url="https://www.cursemaven.com",
+        )
+
+        artifact = provider.resolve(
+            CurseForgeFileContext(
+                project_id=561885,
+                file_id=6290217,
+                required=True,
+                slug="just-zoom",
+            )
+        )
+
+        self.assertIsNotNone(artifact)
+        assert artifact is not None
+        self.assertEqual(artifact.provider, "test-maven")
+        self.assertEqual(artifact.file_name, "just-zoom-561885-6290217.jar")
+        self.assertEqual(
+            artifact.download_url,
+            "https://www.cursemaven.com/curse/maven/"
+            "just-zoom-561885/6290217/just-zoom-561885-6290217.jar",
+        )
+
+    def test_curseforge_resolver_caches_resolved_artifact_metadata(self) -> None:
+        from pack2serve.downloader import (
+            ArtifactCache,
+            CurseForgeResolver,
+            ResolvedCurseForgeArtifact,
+        )
+        from pack2serve.models import RemoteFile
+
+        class Provider:
+            name = "fake-provider"
+
+            def __init__(self, url: str):
+                self.url = url
+
+            def resolve(self, context):
+                return ResolvedCurseForgeArtifact(
+                    provider=self.name,
+                    project_id=context.project_id,
+                    file_id=context.file_id,
+                    file_name="resolved.jar",
+                    download_url=self.url,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "resolved.jar"
+            source.write_bytes(b"resolved")
+            resolver = CurseForgeResolver(
+                ArtifactCache(tmp_path / "cache"),
+                providers=[Provider(source.as_uri())],
+            )
+
+            artifact = resolver.resolve_and_cache(
+                RemoteFile(
+                    provider="curseforge",
+                    target_path="mods",
+                    project_id=561885,
+                    file_id=6290217,
+                    required=True,
+                    slug="just-zoom",
+                )
+            )
+
+            metadata = json.loads((artifact.path.with_suffix(".jar.pack2serve.json")).read_text(encoding="utf-8"))
+            self.assertEqual(artifact.path.read_bytes(), b"resolved")
+            self.assertEqual(artifact.path.parts[-4:], ("curseforge", "561885", "6290217", "resolved.jar"))
+            self.assertEqual(metadata["provider"], "fake-provider")
+            self.assertEqual(metadata["projectID"], 561885)
+            self.assertEqual(metadata["fileID"], 6290217)
+            self.assertEqual(metadata["downloadUrl"], source.as_uri())
+
+    def test_curseforge_resolver_falls_through_to_second_provider(self) -> None:
+        from pack2serve.downloader import (
+            ArtifactCache,
+            CurseForgeResolver,
+            DownloadError,
+            ResolvedCurseForgeArtifact,
+        )
+        from pack2serve.models import RemoteFile
+
+        class FailingProvider:
+            name = "first"
+
+            def resolve(self, context):
+                raise DownloadError("first failed")
+
+        class WorkingProvider:
+            name = "second"
+
+            def __init__(self, url: str):
+                self.url = url
+
+            def resolve(self, context):
+                return ResolvedCurseForgeArtifact(
+                    provider=self.name,
+                    project_id=context.project_id,
+                    file_id=context.file_id,
+                    file_name="second.jar",
+                    download_url=self.url,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "second.jar"
+            source.write_bytes(b"second")
+            resolver = CurseForgeResolver(
+                ArtifactCache(tmp_path / "cache"),
+                providers=[FailingProvider(), WorkingProvider(source.as_uri())],
+            )
+
+            artifact = resolver.resolve_and_cache(
+                RemoteFile(provider="curseforge", target_path="mods", project_id=1, file_id=2)
+            )
+
+            self.assertEqual(artifact.provider, "second")
+            self.assertEqual(artifact.path.read_bytes(), b"second")
+
+    def test_curseforge_resolver_reports_provider_errors_when_unresolved(self) -> None:
+        from pack2serve.downloader import ArtifactCache, CurseForgeResolutionError, CurseForgeResolver, DownloadError
+        from pack2serve.models import RemoteFile
+
+        class FailingProvider:
+            name = "broken"
+
+            def resolve(self, context):
+                raise DownloadError("network failed")
+
+        with tempfile.TemporaryDirectory() as temp:
+            resolver = CurseForgeResolver(ArtifactCache(Path(temp) / "cache"), providers=[FailingProvider()])
+
+            with self.assertRaises(CurseForgeResolutionError) as raised:
+                resolver.resolve_and_cache(
+                    RemoteFile(provider="curseforge", target_path="mods", project_id=1, file_id=2)
+                )
+
+            self.assertEqual(raised.exception.provider_errors, ["broken: network failed"])
+
+    def test_curseforge_resolver_reuses_project_file_cache_before_providers(self) -> None:
+        from pack2serve.downloader import ArtifactCache, CurseForgeResolver
+        from pack2serve.models import RemoteFile
+
+        class NetworkProvider:
+            name = "network"
+
+            def resolve(self, context):
+                raise AssertionError("provider should not be called when project/file cache exists")
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            cache_root = tmp_path / "cache"
+            cached = cache_root / "curseforge" / "1" / "2" / "cached.jar"
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(b"cached")
+            resolver = CurseForgeResolver(ArtifactCache(cache_root), providers=[NetworkProvider()])
+
+            artifact = resolver.resolve_and_cache(
+                RemoteFile(provider="curseforge", target_path="mods", project_id=1, file_id=2)
+            )
+
+            self.assertEqual(artifact.provider, "cache")
+            self.assertEqual(artifact.path, cached)
+            self.assertEqual(artifact.path.read_bytes(), b"cached")
+
     def test_cli_inspect_returns_success_for_modrinth_pack(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -667,6 +980,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
                         "--target",
                         str(target),
                         "--download",
+                        "--no-default-curseforge-providers",
                         "--curseforge-mirror",
                         (mirror_root / "{projectID}" / "{fileID}" / "file.jar").as_uri(),
                     ]
@@ -674,6 +988,67 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual((target / "mods/10-20.jar").read_bytes(), b"mirror-cli")
+
+    def test_cli_curseforge_providers_include_default_no_key_providers(self) -> None:
+        from pack2serve.cli import _curseforge_providers
+
+        with tempfile.TemporaryDirectory() as temp:
+            providers = _curseforge_providers(Path(temp) / "cache", [])
+
+        self.assertEqual([provider.name for provider in providers[:2]], ["curse-tools", "curse-maven"])
+
+    def test_cli_no_default_curseforge_providers_disables_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.zip"
+            target = tmp_path / "server"
+            cache = tmp_path / "cache"
+            write_zip(
+                pack,
+                {
+                    "manifest.json": json.dumps(
+                        {
+                            "manifestType": "minecraftModpack",
+                            "manifestVersion": 1,
+                            "name": "No Defaults",
+                            "version": "1.0.0",
+                            "minecraft": {
+                                "version": "1.20.1",
+                                "modLoaders": [{"id": "fabric-0.18.4", "primary": True}],
+                            },
+                            "files": [{"projectID": 10, "fileID": 20, "required": True}],
+                            "overrides": "overrides",
+                        }
+                    ),
+                },
+            )
+
+            with redirect_stdout(StringIO()):
+                exit_code = main(
+                    [
+                        "build",
+                        str(pack),
+                        "--target",
+                        str(target),
+                        "--cache",
+                        str(cache),
+                        "--download",
+                        "--no-default-curseforge-providers",
+                    ]
+                )
+
+            persisted = json.loads((target / "pack2serve/build-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(len(persisted["manual_actions"]), 1)
+            self.assertEqual(persisted["curseforge_resolution"]["providers"], {})
+
+    def test_panel_service_uses_default_curseforge_providers_when_downloading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            service = PanelService(workspace_dir=Path(temp) / "workspace")
+
+            providers = service._curseforge_providers([])
+
+        self.assertEqual([provider.name for provider in providers[:2]], ["curse-tools", "curse-maven"])
 
     def test_cli_install_loader_reads_plan_and_downloads_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1035,6 +1410,90 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertEqual(result.status, "failed")
             self.assertTrue(any("dependency" in hint.lower() for hint in result.hints))
+
+    def test_server_validator_detects_port_binding_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_port.py"
+            fake.write_text(
+                "print('**** FAILED TO BIND TO PORT!')\n"
+                "print('java.net.BindException: Address already in use: bind')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "failed")
+            self.assertTrue(any("port" in hint.lower() for hint in result.hints))
+
+    def test_server_validator_does_not_fail_on_optional_mixin_class_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_optional_probe.py"
+            fake.write_text(
+                "print('Error loading class: net/coderbot/iris/Iris "
+                "(java.lang.ClassNotFoundException: net/coderbot/iris/Iris)')\n"
+                "print('Done (1.0s)! For help, type \"help\"')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "started")
+
+    def test_server_validator_does_not_hint_dependency_for_unrelated_missing_words(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_missing_words.py"
+            fake.write_text(
+                "print('RLMixins Early Loading: Missing Particle Rendering')\n"
+                "print('Done (1.0s)! For help, type \"help\"')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "started")
+            self.assertFalse(any("dependency" in hint.lower() for hint in result.hints))
+
+    def test_server_validator_does_not_hint_dependency_for_successful_forge_handshake(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_forge_handshake.py"
+            fake.write_text(
+                "print('Attempting connection with missing mods [minecraft, forge] at SERVER')\n"
+                "print('Done (1.0s)! For help, type \"help\"')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "started")
+            self.assertFalse(any("dependency" in hint.lower() for hint in result.hints))
 
     def test_server_validator_replaces_invalid_output_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

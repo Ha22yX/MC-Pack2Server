@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ def _parse_curseforge(source: Path, archive: zipfile.ZipFile) -> ModpackInfo:
     manifest = _read_json(archive, "manifest.json")
     minecraft = manifest.get("minecraft", {})
     loader = _loader_from_curseforge_modloaders(minecraft.get("modLoaders", []))
+    modlist_entries = _read_curseforge_modlist(archive)
     remote_files = [
         RemoteFile(
             provider="curseforge",
@@ -59,8 +61,10 @@ def _parse_curseforge(source: Path, archive: zipfile.ZipFile) -> ModpackInfo:
             project_id=file.get("projectID"),
             file_id=file.get("fileID"),
             required=bool(file.get("required", True)),
+            slug=modlist_entries[index][0] if index < len(modlist_entries) else None,
+            display_name=modlist_entries[index][1] if index < len(modlist_entries) else None,
         )
-        for file in manifest.get("files", [])
+        for index, file in enumerate(manifest.get("files", []))
     ]
     return ModpackInfo(
         source_path=source,
@@ -78,6 +82,25 @@ def _read_json(archive: zipfile.ZipFile, name: str) -> dict[str, Any]:
     return json.loads(archive.read(name).decode("utf-8-sig"))
 
 
+def _read_curseforge_modlist(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
+    if "modlist.html" not in archive.namelist():
+        return []
+    html = archive.read("modlist.html").decode("utf-8", errors="replace")
+    entries: list[tuple[str, str]] = []
+    pattern = re.compile(
+        r'href=["\']https?://www\.curseforge\.com/minecraft/[^/"\']+/([^/"\']+)["\'][^>]*>(.*?)</a>',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for slug, label in pattern.findall(html):
+        display_name = re.sub(r"\s*\(by .*\)\s*$", "", _strip_html(label), flags=re.IGNORECASE).strip()
+        entries.append((slug.strip(), display_name))
+    return entries
+
+
+def _strip_html(value: str) -> str:
+    return re.sub(r"<[^>]+>", "", value).strip()
+
+
 def _loader_from_modrinth_dependencies(deps: dict[str, str]) -> LoaderInfo:
     for key in ("forge", "neoforge", "fabric-loader", "quilt-loader"):
         if key in deps:
@@ -92,4 +115,3 @@ def _loader_from_curseforge_modloaders(loaders: list[dict[str, Any]]) -> LoaderI
         return LoaderInfo(name=raw, version="")
     name, version = raw.split("-", 1)
     return LoaderInfo(name=name, version=version)
-

@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 from pack2serve.builder import ServerBuilder
-from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider
+from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, default_curseforge_providers
 
 
 class PanelService:
@@ -43,16 +43,18 @@ class PanelService:
             servers.append(_summary_from_report(report_path.parents[1].name, data))
         return servers
 
-    def _curseforge_providers(self, mirrors: list[str]) -> list[CurseForgeTemplateMirrorProvider]:
+    def _curseforge_providers(self, mirrors: list[str]) -> list[object]:
         cache = ArtifactCache(self.cache_dir)
-        return [
+        providers: list[object] = default_curseforge_providers()
+        providers.extend(
             CurseForgeTemplateMirrorProvider(
                 cache=cache,
                 name=f"panel-curseforge-mirror-{index + 1}",
                 url_template=mirror,
             )
             for index, mirror in enumerate(mirrors)
-        ]
+        )
+        return providers
 
 
 def _summary_from_report(target_name: str, report: dict[str, object]) -> dict[str, object]:

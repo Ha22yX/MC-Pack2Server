@@ -7,6 +7,8 @@ from pathlib import Path, PurePosixPath
 
 from pack2serve.downloader import (
     ArtifactCache,
+    CurseForgeResolutionError,
+    CurseForgeResolver,
     CurseForgeTemplateMirrorProvider,
     DownloadError,
     ModrinthDirectProvider,
@@ -14,7 +16,14 @@ from pack2serve.downloader import (
 )
 from pack2serve.java import create_java_runtime_install_plan, plan_java
 from pack2serve.loader import create_loader_install_plan
-from pack2serve.models import BuildReport, CopiedOverride, ManualAction, ModpackFormat, RemoteFile
+from pack2serve.models import (
+    BuildReport,
+    CopiedOverride,
+    CurseForgeResolutionSummary,
+    ManualAction,
+    ModpackFormat,
+    RemoteFile,
+)
 from pack2serve.parser import parse_modpack
 from pack2serve.zip_utils import copy_member, require_safe_zip
 
@@ -70,12 +79,17 @@ class ServerBuilder:
         java = plan_java(pack.minecraft_version)
         copied: list[CopiedOverride] = []
         manual_actions: list[ManualAction] = []
+        curseforge_resolution: CurseForgeResolutionSummary | None = None
 
         with zipfile.ZipFile(pack.source_path) as archive:
             require_safe_zip(archive)
             copied = self._copy_overrides(archive, pack.override_root, target)
 
-        manual_actions.extend(self._resolve_remote_files(pack.format, pack.remote_files, target))
+        if pack.format == ModpackFormat.CURSEFORGE:
+            curseforge_actions, curseforge_resolution = self._resolve_curseforge_files(pack.remote_files, target)
+            manual_actions.extend(curseforge_actions)
+        else:
+            manual_actions.extend(self._resolve_remote_files(pack.format, pack.remote_files, target))
 
         report = BuildReport(
             pack=pack,
@@ -84,6 +98,7 @@ class ServerBuilder:
             downloads=pack.remote_files,
             copied_overrides=copied,
             manual_actions=manual_actions,
+            curseforge_resolution=curseforge_resolution,
         )
         self._write_project_files(report)
         return report
@@ -91,8 +106,6 @@ class ServerBuilder:
     def _resolve_remote_files(
         self, pack_format: ModpackFormat, remote_files: list[RemoteFile], target: Path
     ) -> list[ManualAction]:
-        if pack_format == ModpackFormat.CURSEFORGE:
-            return self._resolve_curseforge_files(remote_files, target)
         if not self.download_remote:
             return []
 
@@ -112,37 +125,45 @@ class ServerBuilder:
                 )
         return actions
 
-    def _resolve_curseforge_files(self, remote_files: list[RemoteFile], target: Path) -> list[ManualAction]:
+    def _resolve_curseforge_files(
+        self, remote_files: list[RemoteFile], target: Path
+    ) -> tuple[list[ManualAction], CurseForgeResolutionSummary]:
         actions: list[ManualAction] = []
         if not self.download_remote:
             providers: list[CurseForgeTemplateMirrorProvider] = []
         else:
             providers = self.curseforge_providers
+        resolver = CurseForgeResolver(ArtifactCache(self.cache_dir), providers)
+        provider_counts: dict[str, int] = {}
+        resolved_count = 0
         for remote in remote_files:
-            resolved = False
-            last_error: str | None = None
-            for provider in providers:
-                try:
-                    artifact = provider.resolve_and_cache(remote)
-                    copy_cached_artifact(artifact, target / "mods" / artifact.path.name)
-                    resolved = True
-                    break
-                except DownloadError as exc:
-                    last_error = str(exc)
-            if not resolved:
+            try:
+                artifact = resolver.resolve_and_cache(remote)
+                copy_cached_artifact(artifact, target / "mods" / artifact.path.name)
+                resolved_count += 1
+                provider_counts[artifact.provider] = provider_counts.get(artifact.provider, 0) + 1
+            except CurseForgeResolutionError as exc:
                 actions.append(
                     ManualAction(
                         type="missing-curseforge-artifact",
-                        message="No-key CurseForge mode requires a configured mirror provider or manual jar upload.",
+                        message=(
+                            "This CurseForge file could not be resolved from configured no-key providers. "
+                            "Configure another mirror or upload the jar manually."
+                        ),
                         details={
                             "projectID": remote.project_id,
                             "fileID": remote.file_id,
                             "required": remote.required,
-                            "lastError": last_error,
+                            "slug": remote.slug,
+                            "providerErrors": exc.provider_errors,
                         },
                     )
                 )
-        return actions
+        return actions, CurseForgeResolutionSummary(
+            resolved=resolved_count,
+            unresolved=len(actions),
+            providers=provider_counts,
+        )
 
     def _copy_overrides(
         self, archive: zipfile.ZipFile, override_root: str, target: Path

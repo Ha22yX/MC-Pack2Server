@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from pack2serve.builder import ServerBuilder
-from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider
+from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, default_curseforge_providers
 from pack2serve.eula import accept_eula
 from pack2serve.installer import LoaderInstaller, load_loader_plan
 from pack2serve.java import JavaInstaller, JavaRuntimeInstallResult, load_java_runtime_install_plan
@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="No-key CurseForge mirror URL template with {projectID} and {fileID}",
     )
+    build_parser.add_argument("--no-default-curseforge-providers", action="store_true")
 
     prepare_parser = subcommands.add_parser(
         "prepare", help="Build, install loader, and optionally validate a modpack server"
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare_parser.add_argument("--cache", type=Path, default=Path("data/cache"))
     prepare_parser.add_argument("--download", action="store_true")
     prepare_parser.add_argument("--curseforge-mirror", action="append", default=[])
+    prepare_parser.add_argument("--no-default-curseforge-providers", action="store_true")
     prepare_parser.add_argument("--execute-installers", action="store_true")
     prepare_parser.add_argument("--install-java", action="store_true")
     prepare_parser.add_argument("--java-url-override")
@@ -113,7 +115,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "build":
-        curseforge_providers = _curseforge_providers(args.cache, args.curseforge_mirror)
+        curseforge_providers = _curseforge_providers(
+            args.cache,
+            args.curseforge_mirror,
+            include_defaults=not args.no_default_curseforge_providers,
+        )
         report = ServerBuilder(
             cache_dir=args.cache,
             download_remote=args.download,
@@ -139,7 +145,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "prepare":
-        curseforge_providers = _curseforge_providers(args.cache, args.curseforge_mirror)
+        curseforge_providers = _curseforge_providers(
+            args.cache,
+            args.curseforge_mirror,
+            include_defaults=not args.no_default_curseforge_providers,
+        )
         build_report = ServerBuilder(
             cache_dir=args.cache,
             download_remote=args.download,
@@ -255,16 +265,25 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
-def _curseforge_providers(cache_dir: Path, templates: list[str]) -> list[CurseForgeTemplateMirrorProvider]:
+def _curseforge_providers(
+    cache_dir: Path,
+    templates: list[str],
+    *,
+    include_defaults: bool = True,
+) -> list[object]:
     cache = ArtifactCache(cache_dir)
-    return [
+    providers: list[object] = []
+    if include_defaults:
+        providers.extend(default_curseforge_providers())
+    providers.extend(
         CurseForgeTemplateMirrorProvider(
             cache=cache,
             name=f"curseforge-mirror-{index + 1}",
             url_template=template,
         )
         for index, template in enumerate(templates)
-    ]
+    )
+    return providers
 
 
 def _configure_text_output() -> None:

@@ -20,8 +20,8 @@
 | --- | --- | --- | --- | --- | --- |
 | BattleArmory TACZ | Modrinth 远程文件已落地，人工项 0 | 已安装 Forge | JRE 17 | crashed | 生成链路完成；运行时模组依赖冲突，需要服务端兼容诊断 |
 | 乌托邦探险之旅 | Modrinth 远程文件已落地，人工项 0 | 已安装 Fabric | JRE 17 | failed | 生成链路完成；首次完整日志显示 `moremusic` 调用客户端 Fabric API，后续复跑受 Windows 文件锁影响 |
-| RLCraft | CurseForge 无 Key/无镜像时产生 187 个人工项 | 已安装 Forge | JRE 8 | crashed | 不完整；缺 CurseForge artifact 自动解析/镜像下载链 |
-| Into the Backrooms | CurseForge 无 Key/无镜像时产生 36 个人工项 | 已安装 Fabric | JRE 17 | started | 基础 Fabric 服务端能启动，但不是完整等价整合包服务器 |
+| RLCraft | CurseForge 默认无 Key provider 已补齐 187/187，人工项 0 | 已安装 Forge | JRE 8 | started | 自动补齐、安装、启动验证均通过 |
+| Into the Backrooms | CurseForge 默认无 Key provider 已补齐 36/36，人工项 0 | 已安装 Fabric | JRE 17 | failed | 自动补齐完成；运行验证受本机 Windows `logs/latest.log` 文件锁影响 |
 | Re-Console LTS | Modrinth 远程文件已落地，人工项 0 | 已安装 NeoForge | JRE 21 | failed | NeoForge 安装链路完成；启动器报 `NoSuchElementException: No value present`，需要进一步定位 run.bat/argfile 或包兼容问题 |
 
 ## 关键发现
@@ -29,8 +29,8 @@
 1. Modrinth `.mrpack` 解析和下载链路已经可用。
    BattleArmory、乌托邦、Re-Console 三个 Modrinth 样本均能解析 `modrinth.index.json`，读取 Minecraft/Loader 依赖，下载 manifest 中远程文件，并复制 overrides。
 
-2. CurseForge `.zip` 解析可用，但无 Key/无镜像模式不能完整补齐。
-   CurseForge manifest 只提供 `projectID/fileID`，没有直接下载 URL 和稳定文件名。当前无 API Key、无镜像提供者时，系统会生成 `missing-curseforge-artifact` 人工项。RLCraft 有 187 项，Into the Backrooms 有 36 项。
+2. CurseForge `.zip` 默认无 Key 自动补齐链路已可用。
+   Pack2Serve 会解析 `manifest.json` 的 `projectID/fileID`，从 `modlist.html` 恢复 slug，优先复用 `data/cache/curseforge/<projectID>/<fileID>/`，再尝试 `curse.tools` 和 Curse Maven 风格 provider。RLCraft 187/187、Into the Backrooms 36/36 均已补齐到人工项 0。
 
 3. Loader 安装链路覆盖了 Fabric、Forge、NeoForge。
    Fabric 生成 `server.jar`；Forge/NeoForge 通过 installer 生成 `run.bat` 或旧版 Forge 根目录 jar。此次验证修复了 installer 执行后 `start.ps1` 仍指向 `server.jar` 的问题。
@@ -47,12 +47,13 @@
 - `install-java` 会让 `run.bat` 通过 PATH 使用项目内 Java，避免系统 Java 版本污染验证。
 - 验证器输出解码改为 UTF-8 `errors=replace`，避免中文/异常字节导致报告生成崩溃。
 - CLI stdout/stderr 自动配置为 UTF-8，避免 Windows 控制台输出 JSON 时报编码错误。
-- 验证器新增 Java 版本不兼容、`MissingModsException`、`NoClassDefFoundError`、`ClassNotFoundException` 等常见失败识别。
+- 验证器新增 Java 版本不兼容、`MissingModsException`、`NoClassDefFoundError`、端口占用、可忽略 optional mixin class probe 等常见日志识别。
+- 新增 CurseForge 默认 no-key provider 链、Curse Maven fallback、`modlist.html` slug 解析、`projectID/fileID` cache-first 复用和 `curseforge_resolution` 报告。
 
 ## 后续开发建议
 
-1. CurseForge 无 Key方案必须接入可配置镜像解析器。
-   需要从 `projectID/fileID` 解析真实 jar 文件名、下载 URL、hash，并将 `manual_actions` 降到 0。没有这一步，CurseForge zip 不能宣称完整自动生成。
+1. CurseForge 无 Key方案需要继续提升 provider 稳定性和速度。
+   当前样本已能补齐到 `manual_actions=0`，但第三方 provider 仍可能超时或失效。后续应加入并发下载、短超时重试、更多镜像 provider 和进度报告。
 
 2. 增加服务端兼容扫描。
    对 Fabric/Forge/NeoForge mod jar 读取 metadata，识别 client-only、server-only、依赖缺失、版本范围不匹配，在真正启动前给出可操作报告。

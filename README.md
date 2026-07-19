@@ -33,10 +33,16 @@ Download Modrinth remote files while building:
 python -m pack2serve.cli build "C:\path\to\modpack.mrpack" --target "data\servers\example" --download
 ```
 
-Use a no-key CurseForge mirror template:
+Use default no-key CurseForge providers:
 
 ```powershell
-python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download --curseforge-mirror "https://mirror.example/curseforge/{projectID}/{fileID}/file.jar"
+python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download
+```
+
+Disable bundled no-key providers and use only explicit mirror templates:
+
+```powershell
+python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download --no-default-curseforge-providers --curseforge-mirror "https://mirror.example/curseforge/{projectID}/{fileID}/file.jar"
 ```
 
 Download the loader artifact for a generated server project:

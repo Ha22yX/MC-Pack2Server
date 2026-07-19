@@ -131,6 +131,8 @@ def _classify_output(output: str, return_code: int | None, timed_out: bool) -> s
         return "crashed"
     if (
         "failed to start" in lowered
+        or "failed to bind to port" in lowered
+        or "address already in use" in lowered
         or "mod loading error" in lowered
         or "exception in thread" in lowered
         or "runtimeexception" in lowered
@@ -141,7 +143,7 @@ def _classify_output(output: str, return_code: int | None, timed_out: bool) -> s
         or "unsupported class file major version" in lowered
         or "missingmodsexception" in lowered
         or "noclassdeffounderror" in lowered
-        or "classnotfoundexception" in lowered
+        or "caused by: java.lang.classnotfoundexception" in lowered
     ):
         return "failed"
     if "done (" in lowered and "for help" in lowered:
@@ -154,6 +156,7 @@ def _classify_output(output: str, return_code: int | None, timed_out: bool) -> s
 def _hints(output: str, return_code: int | None, timed_out: bool) -> list[str]:
     lowered = output.lower()
     hints: list[str] = []
+    started = "done (" in lowered and "for help" in lowered
     if timed_out:
         hints.append("The process did not finish before the validation timeout.")
     if (
@@ -162,18 +165,20 @@ def _hints(output: str, return_code: int | None, timed_out: bool) -> list[str]:
         or "appclassloader" in lowered
     ):
         hints.append("The selected Java runtime is incompatible with this loader/mod set. Use java-plan.json.")
-    if "missing mods" in lowered or "mod loading error" in lowered:
+    if not started and ("missing mods" in lowered or "mod loading error" in lowered):
         hints.append("A dependency may be missing or a client-only mod may be present.")
     if (
         "missingmodsexception" in lowered
         or "noclassdeffounderror" in lowered
-        or "classnotfoundexception" in lowered
-    ) and not any("dependency" in hint.lower() for hint in hints):
+        or "caused by: java.lang.classnotfoundexception" in lowered
+    ) and not started and not any("dependency" in hint.lower() for hint in hints):
         hints.append("A dependency may be missing or a client-only mod may be present.")
     if "agree to the eula" in lowered or ("eula" in lowered and "run the server" in lowered):
         hints.append("The Minecraft EULA may need to be accepted before startup can continue.")
     if "accessdeniedexception" in lowered or "access is denied" in lowered:
         hints.append("The server process hit a filesystem permission or file-lock issue.")
+    if "failed to bind to port" in lowered or "address already in use" in lowered:
+        hints.append("The configured server port is already in use.")
     if return_code and return_code != 0 and not hints:
         hints.append("The server process exited with a non-zero code. Check validation log.")
     return hints

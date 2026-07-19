@@ -25,6 +25,9 @@ Current capabilities:
 - Download Modrinth remote files through their `downloads[]` URLs when `--download` is enabled.
 - Cache downloaded artifacts under `data/cache`.
 - Verify Modrinth downloads with SHA1/SHA512 and expected file size when present.
+- Resolve CurseForge files through bundled no-key providers when `--download` is enabled.
+- Recover CurseForge project slugs from `modlist.html` and use them for Curse Maven style fallback URLs.
+- Reuse cached CurseForge artifacts by `projectID/fileID` before attempting network providers.
 - Resolve CurseForge files through configurable no-key mirror URL templates when `--curseforge-mirror` is provided.
 - Create manual action items for CurseForge files when no mirror provider resolves them.
 - Generate loader-specific install plans for Fabric, Forge, and NeoForge.
@@ -64,10 +67,16 @@ Build and download remote Modrinth artifacts:
 python -m pack2serve.cli build "C:\path\to\modpack.mrpack" --target "data\servers\example" --download
 ```
 
-Build a CurseForge ZIP with a no-key mirror template:
+Build a CurseForge ZIP with bundled no-key providers:
 
 ```powershell
-python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download --curseforge-mirror "https://mirror.example/curseforge/{projectID}/{fileID}/file.jar"
+python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download
+```
+
+Disable bundled providers and use only a configured mirror template:
+
+```powershell
+python -m pack2serve.cli build "C:\path\to\modpack.zip" --target "data\servers\example" --download --no-default-curseforge-providers --curseforge-mirror "https://mirror.example/curseforge/{projectID}/{fileID}/file.jar"
 ```
 
 Download/install the generated loader plan:
@@ -115,13 +124,23 @@ The following sample packs were parsed and built into `data/servers/integration/
 |---|---|---|---:|---:|---:|
 | BattleArmory TACZ | Modrinth | Forge 47.4.20 | 90 | 1619 | 0 |
 | 乌托邦探险之旅 | Modrinth | Fabric Loader 0.18.4 | 413 | 2694 | 0 |
-| RLCraft | CurseForge | Forge 14.23.5.2860 | 187 | 3381 | 187 |
-| Into the Backrooms | CurseForge | Fabric 0.18.4 | 36 | 39 | 36 |
+| RLCraft | CurseForge | Forge 14.23.5.2860 | 187 | 3381 | 0 |
+| Into the Backrooms | CurseForge | Fabric 0.18.4 | 36 | 39 | 0 |
 | Re-Console LTS NeoForge | Modrinth | NeoForge 21.1.233 | 115 | 1855 | 0 |
 
 ## Runtime Verification
 
-The `Into the Backrooms` Fabric sample has been through a real local first-start check:
+The `RLCraft` CurseForge sample has been through a real local first-start check after no-key artifact resolution:
+
+- `build --download` resolved 187/187 CurseForge remote files with zero manual actions.
+- `install-loader --execute-installers` executed the Forge 1.12.2 server installer.
+- `install-java` installed project-local JRE 8.
+- `accept-eula --i-agree` updated `eula.txt` explicitly.
+- `validate-server --timeout 300` reached `status: started` and stopped the server cleanly after Minecraft reported startup completion.
+
+The `Into the Backrooms` CurseForge sample resolved 36/36 remote files with zero manual actions. Runtime validation reached mod initialization but failed on a Windows file-lock writing `logs/latest.log` in the local verification environment.
+
+The `Into the Backrooms` Fabric sample was previously through a base local first-start check before full CurseForge artifact resolution:
 
 - `install-loader` downloaded the Fabric server launcher jar.
 - `validate-server` first reported `needs-eula`.
@@ -131,7 +150,8 @@ The `Into the Backrooms` Fabric sample has been through a real local first-start
 ## Current Limits
 
 - Modrinth direct download is implemented, but it is only executed when `--download` is enabled.
-- CurseForge no-key mirror resolution supports template providers, but no default public mirror is bundled yet.
+- CurseForge no-key resolution uses bundled `curse.tools` and Curse Maven style providers, plus optional mirror templates.
+- Third-party provider reliability is outside Pack2Serve's control; unresolved files are still reported as manual actions with provider error details.
 - Loader artifacts can be downloaded, but Forge/NeoForge installer execution is only run when `--execute-installers` is provided.
 - Minecraft EULA acceptance is explicit; Pack2Serve will not automatically accept it without `accept-eula --i-agree`.
 - Java runtime installation is implemented as a project-local portable JRE flow, but it has not yet been run against a real Adoptium download in CI.
