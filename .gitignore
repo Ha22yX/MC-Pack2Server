@@ -1,0 +1,21 @@
+﻿# Runtime/build outputs
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+build/
+.cache/
+.env
+.env.*
+
+# Pack2Serve local data, uploads, generated servers, and caches
+data/uploads/
+data/cache/
+data/servers/
+data/logs/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
