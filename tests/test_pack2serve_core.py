@@ -1404,6 +1404,15 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertNotIn('id="packPath"', PANEL_HTML)
         self.assertNotIn('id="mirrors"', PANEL_HTML)
 
+    def test_panel_home_project_cards_only_show_start_and_stop_actions(self) -> None:
+        card_template = PANEL_HTML.split("function cardTemplate(server)", 1)[1].split("function openProject", 1)[0]
+
+        self.assertEqual(card_template.count("<button"), 2)
+        self.assertIn("startServer('${escapeAttr(server.targetName)}')", card_template)
+        self.assertIn("stopServer('${escapeAttr(server.targetName)}')", card_template)
+        self.assertNotIn("deleteProject('${escapeAttr(server.targetName)}')", card_template)
+        self.assertNotIn("event.stopPropagation(); openProject('${escapeAttr(server.targetName)}')", card_template)
+
     def test_panel_upload_multipart_parser_reads_pack_file_and_fields(self) -> None:
         boundary = "pack2serve-boundary"
         body = (

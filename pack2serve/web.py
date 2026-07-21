@@ -804,9 +804,7 @@ PANEL_HTML = r"""<!doctype html>
         <div class="addr">${escapeHtml(server.connectAddress)}</div>
         <div class="card-actions">
           <button class="primary" onclick="event.stopPropagation(); runAction(() => startServer('${escapeAttr(server.targetName)}'))">启动</button>
-          <button class="secondary" onclick="event.stopPropagation(); openProject('${escapeAttr(server.targetName)}')">详情</button>
           <button class="danger" onclick="event.stopPropagation(); runAction(() => stopServer('${escapeAttr(server.targetName)}'))">停止</button>
-          <button class="danger" onclick="event.stopPropagation(); runAction(() => deleteProject('${escapeAttr(server.targetName)}'))">删除</button>
         </div>
       </article>`;
     }
