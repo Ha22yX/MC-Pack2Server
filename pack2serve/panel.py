@@ -112,7 +112,7 @@ class PanelService:
             self._jobs[job.id] = job
         thread = threading.Thread(
             target=self._run_create_project,
-            args=(job.id, Path(pack_path), target_name, accept_eula, download, curseforge_mirrors or []),
+            args=(job.id, Path(pack_path), target_name, project_name.strip() or Path(pack_path).stem, accept_eula, download, curseforge_mirrors or []),
             daemon=True,
         )
         thread.start()
@@ -130,6 +130,7 @@ class PanelService:
         job_id: str,
         pack_path: Path,
         target_name: str,
+        display_name: str,
         accept_eula: bool,
         download: bool,
         mirrors: list[str],
@@ -146,6 +147,7 @@ class PanelService:
                 download_remote=download,
                 curseforge_providers=providers,
             ).build(pack_path, target)
+            _write_project_metadata(target, display_name)
             assigned_port = self._assign_server_port(target)
             self._append_job_log(job_id, f"服务端端口: {assigned_port}")
             auxiliary_ports = self._assign_auxiliary_ports(target)
@@ -728,12 +730,15 @@ _KEY_SERVER_SETTINGS: dict[str, dict[str, object]] = {
 def _summary_from_report(target_name: str, report: dict[str, object]) -> dict[str, object]:
     pack = report["pack"]
     loader = pack["loader"]
-    compatibility = _read_compatibility_summary(Path(report["target_dir"]))
+    server_dir = Path(report["target_dir"])
+    compatibility = _read_compatibility_summary(server_dir)
+    project = _read_project_metadata(server_dir)
     return {
         "targetName": target_name,
         "target": report["target_dir"],
         "format": pack["format"],
-        "name": pack["name"],
+        "name": project.get("displayName") or pack["name"],
+        "packName": pack["name"],
         "version": pack["version"],
         "minecraftVersion": pack["minecraft_version"],
         "loader": f"{loader['name']} {loader['version']}",
@@ -836,6 +841,34 @@ def _read_properties(path: Path) -> dict[str, str]:
 def _write_properties(path: Path, properties: dict[str, str]) -> None:
     lines = [f"{key}={value}" for key, value in sorted(properties.items())]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_project_metadata(server_dir: Path, display_name: str) -> None:
+    metadata_path = server_dir / "pack2serve" / "project.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "displayName": display_name.strip() or server_dir.name,
+                "targetName": server_dir.name,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _read_project_metadata(server_dir: Path) -> dict[str, str]:
+    metadata_path = server_dir / "pack2serve" / "project.json"
+    if not metadata_path.exists():
+        return {}
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    display_name = str(data.get("displayName", "")).strip()
+    return {"displayName": display_name} if display_name else {}
 
 
 def _normalize_server_setting(key: str, value: object) -> str:

@@ -1036,6 +1036,9 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
                 self.assertEqual(current["status"], "completed")
                 self.assertEqual(current["progress"], 100)
+                self.assertEqual(current["server"]["name"], "Job Server")
+                listed = next(server for server in service.list_servers() if server["targetName"] == "job-server")
+                self.assertEqual(listed["name"], "Job Server")
                 self.assertTrue((tmp_path / "workspace/servers/job-server/eula.txt").read_text(encoding="utf-8").strip().endswith("eula=true"))
                 self.assertIn(
                     "server-port=25566",
