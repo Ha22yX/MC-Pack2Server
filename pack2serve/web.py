@@ -870,10 +870,20 @@ PANEL_HTML = r"""<!doctype html>
         <div class="addr">连接 IP ${escapeHtml(server.connectAddress)}</div>
         <div class="card-actions">
           <button class="secondary" onclick="event.stopPropagation(); runAction(() => copyAddress('${escapeAttr(server.connectAddress)}'))">复制地址</button>
-          <button class="primary" onclick="event.stopPropagation(); runAction(() => startServer('${escapeAttr(server.targetName)}'))">启动</button>
-          <button class="danger" onclick="event.stopPropagation(); runAction(() => stopServer('${escapeAttr(server.targetName)}'))">停止</button>
+          ${cardActionButton(server)}
         </div>
       </article>`;
+    }
+
+    function isServerActiveStatus(status) {
+      return ["running", "starting", "stopping"].includes(status);
+    }
+
+    function cardActionButton(server) {
+      if (isServerActiveStatus(server.runtimeStatus)) {
+        return `<button class="danger" onclick="event.stopPropagation(); runAction(() => stopServer('${escapeAttr(server.targetName)}'))">停止</button>`;
+      }
+      return `<button class="primary" onclick="event.stopPropagation(); runAction(() => startServer('${escapeAttr(server.targetName)}'))">启动</button>`;
     }
 
     async function copyAddress(address) {

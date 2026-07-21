@@ -1505,9 +1505,12 @@ class Pack2ServeCoreTests(unittest.TestCase):
     def test_panel_home_project_cards_show_start_stop_and_copy_address_actions(self) -> None:
         card_template = PANEL_HTML.split("function cardTemplate(server)", 1)[1].split("function openProject", 1)[0]
 
-        self.assertEqual(card_template.count("<button"), 3)
-        self.assertIn("startServer('${escapeAttr(server.targetName)}')", card_template)
-        self.assertIn("stopServer('${escapeAttr(server.targetName)}')", card_template)
+        self.assertIn("${cardActionButton(server)}", card_template)
+        self.assertIn("function cardActionButton(server)", PANEL_HTML)
+        self.assertIn("isServerActiveStatus(server.runtimeStatus)", PANEL_HTML)
+        self.assertIn('["running", "starting", "stopping"].includes(status)', PANEL_HTML)
+        self.assertIn("runAction(() => startServer", PANEL_HTML)
+        self.assertIn("runAction(() => stopServer", PANEL_HTML)
         self.assertIn("copyAddress('${escapeAttr(server.connectAddress)}')", card_template)
         self.assertIn("连接 IP", card_template)
         self.assertNotIn("server.compatibilityLevel", card_template)
