@@ -36,6 +36,8 @@ SERVER_DIRECTORIES = {
     "scripts",
     "datapacks",
     "mods",
+    "resources",
+    "structures",
     "world",
 }
 
@@ -233,6 +235,9 @@ class ServerBuilder:
     def _should_isolate_remote_mod(self, remote: RemoteFile, filename: str | None = None) -> bool:
         if remote.env.get("server", "").lower() == "unsupported":
             return True
+        if filename is not None and remote.target_path.replace("\\", "/").strip("/") == "mods":
+            if Path(filename).suffix.lower() != ".jar":
+                return True
         candidates = [remote.target_path, filename or "", remote.slug or "", remote.display_name or ""]
         return any(_matches_client_only_mod(candidate) for candidate in candidates)
 

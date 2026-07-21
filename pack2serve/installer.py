@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 from pack2serve.loader import LoaderInstallPlan
 
@@ -58,14 +60,35 @@ class LoaderInstaller:
                 text=True,
                 timeout=600,
             )
+            stdout = proc.stdout
+            stderr = proc.stderr
+            if proc.returncode != 0:
+                repaired = _repair_failed_maven_libraries(root, proc.stdout)
+                if repaired:
+                    retry = subprocess.run(
+                        command,
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        timeout=600,
+                    )
+                    stdout = (
+                        stdout
+                        + "\n[pack2serve] Repaired failed installer libraries: "
+                        + ", ".join(repaired)
+                        + "\n[pack2serve] Retrying loader installer.\n"
+                        + retry.stdout
+                    )
+                    stderr = stderr + retry.stderr
+                    proc = retry
             result = LoaderInstallResult(
                 status="installed" if proc.returncode == 0 else "failed",
                 artifact_path=str(artifact_path.relative_to(root)).replace("\\", "/"),
                 executed=True,
                 command=command,
                 return_code=proc.returncode,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
+                stdout=stdout,
+                stderr=stderr,
             )
             if result.status == "installed":
                 self._write_installer_start_script(root)
@@ -143,6 +166,7 @@ def load_loader_plan(path: str | Path) -> LoaderInstallPlan:
 def _download(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "Pack2Serve/0.1.0"})
     temp = destination.with_suffix(destination.suffix + ".tmp")
+    destination.parent.mkdir(parents=True, exist_ok=True)
     try:
         with urllib.request.urlopen(request, timeout=120) as response, temp.open("wb") as output:
             shutil.copyfileobj(response, output)
@@ -150,6 +174,47 @@ def _download(url: str, destination: Path) -> None:
         temp.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to download loader artifact {url}: {exc}") from exc
     temp.replace(destination)
+
+
+_MAVEN_COORDINATE = re.compile(r"^[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.+-]+$")
+
+
+def _repair_failed_maven_libraries(root: Path, stdout: str) -> list[str]:
+    urls_by_coordinate: dict[str, str] = {}
+    failed_coordinates: list[str] = []
+    current_coordinate = ""
+    collecting_failures = False
+
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if line.startswith("Considering library "):
+            current_coordinate = line.removeprefix("Considering library ").strip()
+            continue
+        if line.startswith("Downloading library from ") and current_coordinate:
+            urls_by_coordinate[current_coordinate] = line.removeprefix("Downloading library from ").strip()
+            continue
+        if line.startswith("These libraries failed to download"):
+            collecting_failures = True
+            continue
+        if collecting_failures and _MAVEN_COORDINATE.match(line):
+            failed_coordinates.append(line)
+
+    repaired: list[str] = []
+    for coordinate in failed_coordinates:
+        url = urls_by_coordinate.get(coordinate)
+        if not url:
+            continue
+        destination = _maven_library_path(root, coordinate, url)
+        if not destination.exists():
+            _download(url, destination)
+        repaired.append(coordinate)
+    return repaired
+
+
+def _maven_library_path(root: Path, coordinate: str, url: str) -> Path:
+    group, artifact, version = coordinate.split(":", 2)
+    file_name = Path(unquote(urlparse(url).path)).name or f"{artifact}-{version}.jar"
+    return root / "libraries" / Path(group.replace(".", "/")) / artifact / version / file_name
 
 
 def _command_with_managed_java(root: Path, command: list[str]) -> list[str]:

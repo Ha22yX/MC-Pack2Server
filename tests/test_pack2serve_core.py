@@ -468,6 +468,52 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(result.status, "installed")
             self.assertIn("forge-1.12.2-14.23.5.2860.jar", (server_dir / "start.ps1").read_text(encoding="utf-8"))
 
+    def test_loader_installer_repairs_failed_maven_library_download_and_retries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "installer.jar"
+            source.write_bytes(b"installer")
+            library_source = tmp_path / "launchwrapper-1.12.jar"
+            library_source.write_bytes(b"launchwrapper")
+            fake_installer = tmp_path / "fake_installer.py"
+            fake_installer.write_text(
+                "from pathlib import Path\n"
+                "import sys\n"
+                "lib = Path('libraries/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar')\n"
+                "if not lib.exists():\n"
+                "    print('Considering library net.minecraft:launchwrapper:1.12')\n"
+                f"    print('  Downloading library from {library_source.as_uri()}')\n"
+                "    print('Failed to establish connection')\n"
+                "    print('These libraries failed to download. Try again.')\n"
+                "    print('')\n"
+                "    print('net.minecraft:launchwrapper:1.12')\n"
+                "    sys.exit(1)\n"
+                "Path('forge-1.12.2-14.23.5.2860.jar').write_bytes(b'forge')\n",
+                encoding="utf-8",
+            )
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            plan = LoaderInstallPlan(
+                loader="forge",
+                loader_version="14.23.5.2860",
+                minecraft_version="1.12.2",
+                kind="installer-jar",
+                download_url=source.as_uri(),
+                artifact_name="forge-installer.jar",
+                artifact_path="pack2serve/loaders/forge-installer.jar",
+                install_command=["python", str(fake_installer)],
+                launch_command=["powershell", "-ExecutionPolicy", "Bypass", "-File", "start.ps1"],
+                server_jar=None,
+                notes=[],
+            )
+
+            result = LoaderInstaller().install(server_dir, plan, execute_installers=True)
+
+            repaired_library = server_dir / "libraries/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar"
+            self.assertEqual(result.status, "installed")
+            self.assertEqual(repaired_library.read_bytes(), b"launchwrapper")
+            self.assertIn("Repaired failed installer libraries", result.stdout)
+
     def test_server_builder_copies_server_files_and_isolates_client_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -495,6 +541,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
                     "overrides/config/server.toml": "server=true",
                     "overrides/mods/local.jar": b"jar",
                     "overrides/kubejs/server_scripts/main.js": "ServerEvents.loaded(() => {})",
+                    "overrides/resources/assets/lycanitesmobs/spawners/global.json": "{}",
+                    "overrides/structures/active/tower.rcst": b"structure",
                     "overrides/shaderpacks/client.zip": b"shader",
                     "overrides/options.txt": "guiScale:2",
                     "overrides/saves/World/level.dat": b"level",
@@ -507,6 +555,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual((target / "config/server.toml").read_text(), "server=true")
             self.assertEqual((target / "mods/local.jar").read_bytes(), b"jar")
             self.assertTrue((target / "kubejs/server_scripts/main.js").exists())
+            self.assertTrue((target / "resources/assets/lycanitesmobs/spawners/global.json").exists())
+            self.assertTrue((target / "structures/active/tower.rcst").exists())
             self.assertTrue((target / "_client-overrides/shaderpacks/client.zip").exists())
             self.assertTrue((target / "_client-overrides/options.txt").exists())
             self.assertTrue((target / "world/level.dat").exists())
@@ -953,6 +1003,60 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertIn("automatic remote file downloads", str(raised.exception))
 
+    def test_panel_service_writes_accepted_eula_before_loader_install_can_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.mrpack"
+            write_zip(
+                pack,
+                {
+                    "modrinth.index.json": json.dumps(
+                        {
+                            "formatVersion": 1,
+                            "game": "minecraft",
+                            "name": "Job Sample",
+                            "versionId": "1.0.0",
+                            "dependencies": {"minecraft": "1.20.1", "fabric-loader": "0.18.4"},
+                            "files": [],
+                        }
+                    ),
+                },
+            )
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+
+            def install_java(server_dir: Path, plan: JavaRuntimeInstallPlan):
+                java = Path(server_dir) / plan.java_executable
+                java.parent.mkdir(parents=True, exist_ok=True)
+                java.write_bytes(b"java")
+                return type("Result", (), {"status": "installed", "to_json_dict": lambda self: {}})()
+
+            def fail_loader(server_dir: Path, plan: LoaderInstallPlan, *, execute_installers: bool = False):
+                return type(
+                    "Result",
+                    (),
+                    {"status": "failed", "to_json_dict": lambda self: {"status": "failed"}},
+                )()
+
+            with patch("pack2serve.panel.JavaInstaller") as java_installer_class, patch(
+                "pack2serve.panel.LoaderInstaller"
+            ) as installer_class, patch("pack2serve.panel._is_port_available", return_value=True):
+                java_installer_class.return_value.install.side_effect = install_java
+                installer_class.return_value.install.side_effect = fail_loader
+                job = service.create_project(pack, project_name="Job Server", accept_eula=True, download=True)
+                deadline = time.time() + 10
+                current = service.project_job(job["jobId"])
+                while current["status"] in {"queued", "running"} and time.time() < deadline:
+                    time.sleep(0.05)
+                    current = service.project_job(job["jobId"])
+
+            self.assertEqual(current["status"], "failed")
+            self.assertTrue(
+                (tmp_path / "workspace/servers/job-server/eula.txt")
+                .read_text(encoding="utf-8")
+                .strip()
+                .endswith("eula=true")
+            )
+
     def test_panel_service_reads_players_from_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1227,6 +1331,61 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(persisted["curseforge_resolution"]["unresolved"], 0)
             self.assertEqual(persisted["curseforge_resolution"]["providers"]["summary-provider"], 1)
 
+    def test_server_builder_isolates_curseforge_non_jar_mod_artifacts(self) -> None:
+        from pack2serve.downloader import ResolvedCurseForgeArtifact
+
+        class Provider:
+            name = "zip-provider"
+
+            def __init__(self, url: str):
+                self.url = url
+
+            def resolve(self, context):
+                return ResolvedCurseForgeArtifact(
+                    provider=self.name,
+                    project_id=context.project_id,
+                    file_id=context.file_id,
+                    file_name="LycanitesMobs32X.zip",
+                    download_url=self.url,
+                )
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "LycanitesMobs32X.zip"
+            source.write_bytes(b"resource-pack")
+            pack = tmp_path / "sample.zip"
+            write_zip(
+                pack,
+                {
+                    "manifest.json": json.dumps(
+                        {
+                            "manifestType": "minecraftModpack",
+                            "manifestVersion": 1,
+                            "name": "CF Zip Resource Pack",
+                            "version": "1.0.0",
+                            "minecraft": {
+                                "version": "1.12.2",
+                                "modLoaders": [{"id": "forge-14.23.5.2860", "primary": True}],
+                            },
+                            "files": [{"projectID": 224770, "fileID": 4486512, "required": True}],
+                            "overrides": "overrides",
+                        }
+                    ),
+                },
+            )
+            target = tmp_path / "server"
+
+            report = ServerBuilder(
+                cache_dir=tmp_path / "cache",
+                download_remote=True,
+                curseforge_providers=[Provider(source.as_uri())],
+            ).build(pack, target)
+
+            self.assertFalse((target / "mods/LycanitesMobs32X.zip").exists())
+            self.assertEqual((target / "_client-overrides/mods/LycanitesMobs32X.zip").read_bytes(), b"resource-pack")
+            self.assertEqual(report.copied_overrides[-1].classification, "client-remote-isolated")
+            self.assertEqual(len(report.manual_actions), 0)
+
     def test_curseforge_api_provider_resolves_download_url(self) -> None:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from threading import Thread
@@ -1440,6 +1599,32 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(artifact.provider, "cache")
             self.assertEqual(artifact.path, cached)
             self.assertEqual(artifact.path.read_bytes(), b"cached")
+
+    def test_curseforge_resolver_reuses_non_jar_project_file_cache_before_providers(self) -> None:
+        from pack2serve.downloader import ArtifactCache, CurseForgeResolver
+        from pack2serve.models import RemoteFile
+
+        class NetworkProvider:
+            name = "network"
+
+            def resolve(self, context):
+                raise AssertionError("provider should not be called when non-jar project/file cache exists")
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            cache_root = tmp_path / "cache"
+            cached = cache_root / "curseforge" / "1" / "2" / "resource-pack.zip"
+            cached.parent.mkdir(parents=True)
+            cached.write_bytes(b"cached-zip")
+            resolver = CurseForgeResolver(ArtifactCache(cache_root), providers=[NetworkProvider()])
+
+            artifact = resolver.resolve_and_cache(
+                RemoteFile(provider="curseforge", target_path="mods", project_id=1, file_id=2)
+            )
+
+            self.assertEqual(artifact.provider, "cache")
+            self.assertEqual(artifact.path, cached)
+            self.assertEqual(artifact.path.read_bytes(), b"cached-zip")
 
     def test_cli_inspect_returns_success_for_modrinth_pack(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

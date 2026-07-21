@@ -111,8 +111,10 @@ class ArtifactCache:
         root = self.root / "curseforge" / str(project_id) / str(file_id)
         if not root.exists():
             return None
-        for path in sorted(root.glob("*.jar")):
+        for path in sorted(root.iterdir()):
             if path.is_file() and path.stat().st_size > 0:
+                if path.name.endswith(".pack2serve.json"):
+                    continue
                 return CachedArtifact(
                     provider="cache",
                     key=f"{project_id}-{file_id}",

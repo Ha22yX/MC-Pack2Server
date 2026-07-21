@@ -148,6 +148,8 @@ class PanelService:
             auxiliary_ports = self._assign_auxiliary_ports(target)
             for name, port in auxiliary_ports.items():
                 self._append_job_log(job_id, f"{name} 端口: {port}")
+            if accept_eula:
+                accept_server_eula(target)
             self._append_job_log(job_id, f"远程文件: {len(report.downloads)}")
             self._append_job_log(job_id, f"人工项: {len(report.manual_actions)}")
             self._update_job(job_id, stage="java", progress=56, message="安装匹配的 Java 运行时")
@@ -161,8 +163,6 @@ class PanelService:
             if loader_result.status == "failed":
                 raise RuntimeError("Loader installation failed. Check pack2serve/loader-install-result.json.")
             self._update_job(job_id, stage="eula", progress=82, message="写入 EULA 接受状态")
-            if accept_eula:
-                accept_server_eula(target)
             self._update_job(job_id, stage="finalize", progress=94, message="生成项目摘要")
             summary = _summary_from_report(target_name, report.to_json_dict())
             summary.update(self.server_runtime_status(target_name))
