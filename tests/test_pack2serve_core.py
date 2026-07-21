@@ -1053,6 +1053,22 @@ class Pack2ServeCoreTests(unittest.TestCase):
                 java_installer_class.return_value.install.assert_called_once()
                 installer_class.return_value.install.assert_called_once()
 
+    def test_panel_service_reuses_active_create_job_for_same_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.mrpack"
+            pack.write_bytes(b"placeholder")
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+
+            with patch("pack2serve.panel.threading.Thread") as thread_class:
+                first = service.create_project(pack, project_name="Job Server", accept_eula=True, download=True)
+                second = service.create_project(pack, project_name="Job Server", accept_eula=True, download=True)
+
+            self.assertEqual(second["jobId"], first["jobId"])
+            self.assertEqual(second["targetName"], "job-server")
+            self.assertEqual(thread_class.call_count, 1)
+            thread_class.return_value.start.assert_called_once()
+
     def test_panel_service_create_project_auto_validates_before_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1457,6 +1473,9 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('id="detailDelete"', PANEL_HTML)
         self.assertIn('id="packFile"', PANEL_HTML)
         self.assertIn("updateCreateButton", PANEL_HTML)
+        self.assertIn("creatingProject", PANEL_HTML)
+        self.assertIn('state.creatingProject = true', PANEL_HTML)
+        self.assertIn('提交中，请稍等', PANEL_HTML)
         self.assertIn('type="file"', PANEL_HTML)
         self.assertIn("/api/projects/upload", PANEL_HTML)
         self.assertIn("/api/servers/delete", PANEL_HTML)

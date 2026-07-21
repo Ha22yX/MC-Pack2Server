@@ -109,6 +109,9 @@ class PanelService:
         target_name = _slugify(project_name or Path(pack_path).stem)
         job = ProjectJob(id=uuid.uuid4().hex, target_name=target_name)
         with self._lock:
+            existing = self._active_create_job(target_name)
+            if existing:
+                return existing.to_json_dict()
             self._jobs[job.id] = job
         thread = threading.Thread(
             target=self._run_create_project,
@@ -124,6 +127,16 @@ class PanelService:
             if not job:
                 raise ValueError(f"Unknown project job: {job_id}")
             return job.to_json_dict()
+
+    def _active_create_job(self, target_name: str) -> ProjectJob | None:
+        return next(
+            (
+                job
+                for job in self._jobs.values()
+                if job.target_name == target_name and job.status in {"queued", "running"}
+            ),
+            None,
+        )
 
     def _run_create_project(
         self,

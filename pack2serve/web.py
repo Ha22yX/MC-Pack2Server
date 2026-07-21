@@ -826,7 +826,7 @@ PANEL_HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds"]);
     const HOME_ROUTE = "#/projects";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "" };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -1259,10 +1259,14 @@ PANEL_HTML = r"""<!doctype html>
       if (state.tab === "worlds") await loadWorlds();
     }
 
-    function updateCreateButton() { $("createProject").disabled = !$("download").checked || !$("acceptEula").checked; }
+    function updateCreateButton() {
+      $("createProject").disabled = state.creatingProject || !$("download").checked || !$("acceptEula").checked;
+      $("createProject").textContent = state.creatingProject ? "创建中..." : "创建";
+    }
 
     async function createProject(event) {
       event.preventDefault();
+      if (state.creatingProject) return toast("项目创建任务正在提交中，请稍等。");
       if (!$("download").checked || !$("acceptEula").checked) return toast("请勾选 EULA 和自动下载后再创建。");
       const file = $("packFile").files[0];
       if (!file) return toast("请先选择 .mrpack 或 .zip 整合包文件。");
@@ -1271,11 +1275,18 @@ PANEL_HTML = r"""<!doctype html>
       form.append("projectName", $("projectName").value.trim());
       form.append("download", $("download").checked ? "true" : "false");
       form.append("acceptEula", $("acceptEula").checked ? "true" : "false");
-      const payload = await api("/api/projects/upload", { method: "POST", body: form });
-      $("createDialog").close();
-      $("packFile").value = "";
-      watchJob(payload.job.jobId);
-      toast("项目创建任务已开始");
+      state.creatingProject = true;
+      updateCreateButton();
+      try {
+        const payload = await api("/api/projects/upload", { method: "POST", body: form });
+        $("createDialog").close();
+        $("packFile").value = "";
+        watchJob(payload.job.jobId);
+        toast("项目创建任务已开始");
+      } finally {
+        state.creatingProject = false;
+        updateCreateButton();
+      }
     }
 
     function watchJob(jobId) {
