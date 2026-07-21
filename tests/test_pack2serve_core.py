@@ -23,6 +23,7 @@ from pack2serve.installer import LoaderInstaller
 from pack2serve.panel import PanelService
 from pack2serve.parser import ModpackFormat, parse_modpack
 from pack2serve.validator import ServerValidator
+from pack2serve.web import PANEL_HTML
 
 
 def write_zip(path: Path, files: dict[str, str | bytes]) -> None:
@@ -740,6 +741,11 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             stopped = service.stop_server("sample-server")
             self.assertEqual(stopped["runtimeStatus"], "stopped")
+
+    def test_panel_html_preserves_javascript_backslash_escaping(self) -> None:
+        self.assertIn('replace(/\\\\/g, "\\\\\\\\")', PANEL_HTML)
+        self.assertNotIn("replace(/\\/g, \"\\\\\")", PANEL_HTML)
+        self.assertIn('split(/\\\\r?\\\\n/)', PANEL_HTML)
 
     def test_curseforge_template_mirror_downloads_project_file_pair(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

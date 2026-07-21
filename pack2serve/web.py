@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-PANEL_HTML = """<!doctype html>
+PANEL_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
