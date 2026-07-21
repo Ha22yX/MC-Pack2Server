@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import uuid
+from dataclasses import dataclass
+from email.parser import BytesParser
+from email.policy import default as email_default_policy
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -9,6 +14,9 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from pack2serve.panel import PanelService
+
+
+MAX_UPLOAD_BYTES = 4 * 1024 * 1024 * 1024
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path = "data") -> None:
@@ -48,6 +56,23 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
         def do_POST(self) -> None:
             route = urlparse(self.path).path
             try:
+                if route == "/api/projects/upload":
+                    fields, files = self._read_multipart_form()
+                    upload = files.get("packFile")
+                    if upload is None or not upload.content:
+                        raise ValueError("Please choose a .mrpack or .zip modpack file.")
+                    uploaded_path = _save_uploaded_pack(service.workspace_dir, upload)
+                    self._send_json(
+                        {
+                            "job": service.create_project(
+                                uploaded_path,
+                                project_name=_uploaded_project_name(fields, upload),
+                                accept_eula=_truthy(fields.get("acceptEula", "")),
+                                download=_truthy(fields.get("download", "true")),
+                            )
+                        }
+                    )
+                    return
                 payload = self._read_json()
                 if route == "/api/import":
                     result = service.import_pack(
@@ -103,6 +128,11 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                 return {}
             return json.loads(self.rfile.read(length).decode("utf-8"))
 
+        def _read_multipart_form(self) -> tuple[dict[str, str], dict[str, "UploadedFormFile"]]:
+            length = _validate_upload_length(self.headers.get("Content-Length", ""))
+            body = self.rfile.read(length)
+            return _parse_multipart_form(self.headers.get("Content-Type", ""), body)
+
         def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             self.send_response(status)
@@ -132,6 +162,79 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     serve(args.host, args.port, args.workspace)
     return 0
+
+
+@dataclass(frozen=True)
+class UploadedFormFile:
+    filename: str
+    content: bytes
+
+
+def _parse_multipart_form(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, UploadedFormFile]]:
+    if not content_type.lower().startswith("multipart/form-data"):
+        raise ValueError("Expected multipart/form-data upload.")
+    message = BytesParser(policy=email_default_policy).parsebytes(
+        f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + body
+    )
+    if not message.is_multipart():
+        raise ValueError("Invalid multipart/form-data upload.")
+
+    fields: dict[str, str] = {}
+    files: dict[str, UploadedFormFile] = {}
+    for part in message.iter_parts():
+        if part.get_content_disposition() != "form-data":
+            continue
+        name = part.get_param("name", header="content-disposition")
+        if not name:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        filename = part.get_filename()
+        if filename is None:
+            charset = part.get_content_charset() or "utf-8"
+            fields[name] = payload.decode(charset, errors="replace")
+        else:
+            files[name] = UploadedFormFile(filename=Path(filename.replace("\\", "/")).name, content=payload)
+    return fields, files
+
+
+def _save_uploaded_pack(workspace_dir: Path, upload: UploadedFormFile) -> Path:
+    safe_name = _safe_upload_name(upload.filename)
+    if Path(safe_name).suffix.lower() not in {".mrpack", ".zip"}:
+        raise ValueError("Uploaded modpack must be a .mrpack or .zip file.")
+    upload_dir = workspace_dir / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    path = upload_dir / f"{uuid.uuid4().hex}-{safe_name}"
+    path.write_bytes(upload.content)
+    return path
+
+
+def _uploaded_project_name(fields: dict[str, str], upload: UploadedFormFile) -> str:
+    return fields.get("projectName", "").strip() or Path(upload.filename).stem
+
+
+def _safe_upload_name(filename: str) -> str:
+    original = Path(filename.replace("\\", "/")).name.strip()
+    suffix = Path(original).suffix.lower()
+    stem = Path(original).stem
+    clean_stem = re.sub(r"[^A-Za-z0-9._ -]+", "-", stem).strip(" .-_")
+    return f"{clean_stem or 'modpack'}{suffix or '.zip'}"
+
+
+def _validate_upload_length(raw_length: str) -> int:
+    try:
+        length = int(raw_length)
+    except ValueError as exc:
+        raise ValueError("Upload request is missing a valid Content-Length header.") from exc
+    if length <= 0:
+        raise ValueError("Upload request is empty.")
+    if length > MAX_UPLOAD_BYTES:
+        limit_gb = MAX_UPLOAD_BYTES // (1024 * 1024 * 1024)
+        raise ValueError(f"Uploaded modpack is too large. Limit is {limit_gb} GB.")
+    return length
+
+
+def _truthy(value: object) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 PANEL_HTML = r"""<!doctype html>
@@ -476,15 +579,13 @@ PANEL_HTML = r"""<!doctype html>
         <div class="subtle">导入整合包后会生成独立服务端项目</div>
       </div>
       <div class="modal-body">
-        <label>整合包路径
-          <input id="packPath" placeholder="C:\Users\Administrator\Downloads\example.mrpack">
+        <label>整合包文件
+          <input id="packFile" type="file" accept=".mrpack,.zip,application/zip">
         </label>
         <label>项目名称
           <input id="projectName" placeholder="例如 RLCraft 测试服">
         </label>
-        <label>CurseForge 镜像模板
-          <textarea id="mirrors" rows="3" placeholder="可选，每行一个 {projectID}/{fileID} 模板"></textarea>
-        </label>
+        <div class="subtle">CurseForge 文件将使用系统内置的默认无 Key 解析源，不需要单独填写镜像模板。</div>
         <label class="check-row">
           <input id="download" type="checkbox" checked>
           <span>自动下载可解析的远程模组文件</span>
@@ -507,7 +608,8 @@ PANEL_HTML = r"""<!doctype html>
     const state = { servers: [], selected: null, tab: "logs", jobId: "", jobTimer: null, showInternal: false };
 
     async function api(path, options = {}) {
-      const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
+      const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
+      const response = await fetch(path, { headers, ...options });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || response.statusText);
       return payload;
@@ -693,18 +795,16 @@ PANEL_HTML = r"""<!doctype html>
     async function createProject(event) {
       event.preventDefault();
       try {
-        const mirrors = $("mirrors").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-        const payload = await api("/api/projects", {
-          method: "POST",
-          body: JSON.stringify({
-            packPath: $("packPath").value.trim(),
-            projectName: $("projectName").value.trim(),
-            download: $("download").checked,
-            acceptEula: $("acceptEula").checked,
-            curseforgeMirrors: mirrors
-          })
-        });
+        const file = $("packFile").files[0];
+        if (!file) throw new Error("请先选择 .mrpack 或 .zip 整合包文件。");
+        const form = new FormData();
+        form.append("packFile", file);
+        form.append("projectName", $("projectName").value.trim());
+        form.append("download", $("download").checked ? "true" : "false");
+        form.append("acceptEula", $("acceptEula").checked ? "true" : "false");
+        const payload = await api("/api/projects/upload", { method: "POST", body: form });
         $("createDialog").close();
+        $("packFile").value = "";
         watchJob(payload.job.jobId);
         toast("项目创建任务已开始");
       } catch (error) {

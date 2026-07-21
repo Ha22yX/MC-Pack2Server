@@ -24,7 +24,15 @@ from pack2serve.installer import LoaderInstaller
 from pack2serve.panel import PanelService
 from pack2serve.parser import ModpackFormat, parse_modpack
 from pack2serve.validator import ServerValidator
-from pack2serve.web import PANEL_HTML
+from pack2serve.web import (
+    MAX_UPLOAD_BYTES,
+    PANEL_HTML,
+    UploadedFormFile,
+    _parse_multipart_form,
+    _safe_upload_name,
+    _uploaded_project_name,
+    _validate_upload_length,
+)
 
 
 def write_zip(path: Path, files: dict[str, str | bytes]) -> None:
@@ -887,11 +895,53 @@ class Pack2ServeCoreTests(unittest.TestCase):
     def test_panel_html_preserves_javascript_backslash_escaping(self) -> None:
         self.assertIn('replace(/\\\\/g, "\\\\\\\\")', PANEL_HTML)
         self.assertNotIn("replace(/\\/g, \"\\\\\")", PANEL_HTML)
-        self.assertGreaterEqual(PANEL_HTML.count("split(/\\r?\\n/)"), 2)
+        self.assertGreaterEqual(PANEL_HTML.count("split(/\\r?\\n/)"), 1)
         self.assertIn('id="projectGrid"', PANEL_HTML)
         self.assertIn('id="createDialog"', PANEL_HTML)
         self.assertIn('id="consoleCommand"', PANEL_HTML)
         self.assertIn('id="showInternalProjects"', PANEL_HTML)
+        self.assertIn('id="packFile"', PANEL_HTML)
+        self.assertIn('type="file"', PANEL_HTML)
+        self.assertIn("/api/projects/upload", PANEL_HTML)
+        self.assertNotIn('id="packPath"', PANEL_HTML)
+        self.assertNotIn('id="mirrors"', PANEL_HTML)
+
+    def test_panel_upload_multipart_parser_reads_pack_file_and_fields(self) -> None:
+        boundary = "pack2serve-boundary"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="projectName"\r\n\r\n'
+            "Uploaded Server\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="packFile"; filename="sample.mrpack"\r\n'
+            "Content-Type: application/octet-stream\r\n\r\n"
+        ).encode("utf-8") + b"pack-bytes" + (
+            f"\r\n--{boundary}--\r\n"
+        ).encode("utf-8")
+
+        fields, files = _parse_multipart_form(f"multipart/form-data; boundary={boundary}", body)
+
+        self.assertEqual(fields["projectName"], "Uploaded Server")
+        self.assertEqual(files["packFile"].filename, "sample.mrpack")
+        self.assertEqual(files["packFile"].content, b"pack-bytes")
+
+    def test_panel_upload_uses_original_file_name_when_project_name_is_blank(self) -> None:
+        upload = UploadedFormFile(filename="Example Pack.mrpack", content=b"pack")
+
+        self.assertEqual(_uploaded_project_name({"projectName": "  "}, upload), "Example Pack")
+        self.assertEqual(_uploaded_project_name({"projectName": "Named Server"}, upload), "Named Server")
+
+    def test_panel_upload_safe_name_preserves_extension_for_chinese_pack_names(self) -> None:
+        self.assertEqual(_safe_upload_name("乌托邦探险之旅3.5.2.mrpack"), "3.5.2.mrpack")
+        self.assertEqual(_safe_upload_name("测试.zip"), "modpack.zip")
+        self.assertEqual(_safe_upload_name("bad/../name.exe"), "name.exe")
+
+    def test_panel_upload_length_limit_rejects_missing_or_oversized_requests(self) -> None:
+        self.assertEqual(_validate_upload_length(str(MAX_UPLOAD_BYTES)), MAX_UPLOAD_BYTES)
+        with self.assertRaises(ValueError):
+            _validate_upload_length("")
+        with self.assertRaises(ValueError):
+            _validate_upload_length(str(MAX_UPLOAD_BYTES + 1))
 
     def test_compatibility_audit_requires_startup_validation_for_equivalence(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
