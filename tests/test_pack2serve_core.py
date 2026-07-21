@@ -2264,7 +2264,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
                 if self.path == "/mods/561885/files/6290217/download-url":
-                    body = json.dumps({"data": "https://files.example/example.jar"}).encode("utf-8")
+                    body = json.dumps({"data": "https://files.example/example%2Bencoded%20mod.jar"}).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -2292,8 +2292,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertIsNotNone(artifact)
             assert artifact is not None
-            self.assertEqual(artifact.file_name, "example.jar")
-            self.assertEqual(artifact.download_url, "https://files.example/example.jar")
+            self.assertEqual(artifact.file_name, "example+encoded mod.jar")
+            self.assertEqual(artifact.download_url, "https://files.example/example%2Bencoded%20mod.jar")
             self.assertEqual(artifact.provider, "test-api")
         finally:
             server.shutdown()
@@ -2494,6 +2494,31 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(artifact.provider, "cache")
             self.assertEqual(artifact.path, cached)
             self.assertEqual(artifact.path.read_bytes(), b"cached-zip")
+
+    def test_curseforge_resolver_ignores_incomplete_tmp_cache_files(self) -> None:
+        from pack2serve.downloader import ArtifactCache, CurseForgeResolutionError, CurseForgeResolver, DownloadError
+        from pack2serve.models import RemoteFile
+
+        class FailingProvider:
+            name = "network"
+
+            def resolve(self, context):
+                raise DownloadError("network unavailable")
+
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            cache_root = tmp_path / "cache"
+            partial = cache_root / "curseforge" / "1" / "2" / "mod.jar.tmp"
+            partial.parent.mkdir(parents=True)
+            partial.write_bytes(b"partial")
+            resolver = CurseForgeResolver(ArtifactCache(cache_root), providers=[FailingProvider()])
+
+            with self.assertRaises(CurseForgeResolutionError) as raised:
+                resolver.resolve_and_cache(
+                    RemoteFile(provider="curseforge", target_path="mods", project_id=1, file_id=2)
+                )
+
+            self.assertEqual(raised.exception.provider_errors, ["network: network unavailable"])
 
     def test_cli_inspect_returns_success_for_modrinth_pack(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

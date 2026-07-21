@@ -8,7 +8,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pack2serve.models import RemoteFile
 
@@ -113,7 +113,7 @@ class ArtifactCache:
             return None
         for path in sorted(root.iterdir()):
             if path.is_file() and path.stat().st_size > 0:
-                if path.name.endswith(".pack2serve.json"):
+                if path.name.endswith(".pack2serve.json") or path.suffix.lower() == ".tmp":
                     continue
                 return CachedArtifact(
                     provider="cache",
@@ -173,7 +173,7 @@ class CurseForgeApiProvider:
             provider=self.name,
             project_id=context.project_id,
             file_id=context.file_id,
-            file_name=Path(urlparse(download_url).path).name,
+            file_name=unquote(Path(urlparse(download_url).path).name),
             download_url=download_url,
         )
 
