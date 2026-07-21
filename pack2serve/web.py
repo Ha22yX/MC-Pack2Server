@@ -24,7 +24,8 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                     self._send_html(PANEL_HTML)
                     return
                 if route == "/api/servers":
-                    self._send_json({"servers": service.list_servers()})
+                    include_internal = query.get("includeInternal", ["false"])[0].lower() == "true"
+                    self._send_json({"servers": service.list_servers(include_internal=include_internal)})
                     return
                 if route == "/api/projects/jobs":
                     self._send_json({"job": service.project_job(query.get("jobId", [""])[0])})
@@ -335,6 +336,15 @@ PANEL_HTML = r"""<!doctype html>
     label { display: grid; gap: 7px; color: var(--muted); font-size: 13px; font-weight: 680; }
     .check-row { display: flex; align-items: flex-start; gap: 10px; color: var(--ink); font-size: 13px; }
     .check-row input { width: 18px; min-height: 18px; margin-top: 1px; }
+    .inline-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 680;
+    }
+    .inline-toggle input { width: 18px; min-height: 18px; }
     .toast-stack {
       position: fixed;
       right: 22px;
@@ -405,8 +415,12 @@ PANEL_HTML = r"""<!doctype html>
         <div class="section-head">
           <div>
             <h2>服务器项目</h2>
-            <div class="subtle">点击卡片进入详情面板</div>
+            <div class="subtle">默认隐藏开发验证产生的内部测试目录</div>
           </div>
+          <label class="inline-toggle">
+            <input id="showInternalProjects" type="checkbox">
+            <span>显示测试项目</span>
+          </label>
         </div>
         <div class="project-grid" id="projectGrid"></div>
       </section>
@@ -490,7 +504,7 @@ PANEL_HTML = r"""<!doctype html>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const state = { servers: [], selected: null, tab: "logs", jobId: "", jobTimer: null };
+    const state = { servers: [], selected: null, tab: "logs", jobId: "", jobTimer: null, showInternal: false };
 
     async function api(path, options = {}) {
       const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
@@ -508,7 +522,7 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     async function refresh() {
-      const payload = await api("/api/servers");
+      const payload = await api(`/api/servers?includeInternal=${state.showInternal ? "true" : "false"}`);
       state.servers = payload.servers;
       renderHome();
       if (state.selected) {
@@ -550,7 +564,7 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     function emptyProjects() {
-      return `<div class="panel"><h3>还没有项目</h3><p class="subtle">点击右上角创建项目，导入 mrpack 或 CurseForge zip。</p></div>`;
+      return `<div class="panel"><h3>还没有正式项目</h3><p class="subtle">点击右上角创建项目，或打开“显示测试项目”查看开发验证目录。</p></div>`;
     }
 
     async function runAction(action) {
@@ -742,6 +756,10 @@ PANEL_HTML = r"""<!doctype html>
     $("openCreate").onclick = () => $("createDialog").showModal();
     $("createProject").onclick = createProject;
     $("refresh").onclick = refresh;
+    $("showInternalProjects").onchange = () => {
+      state.showInternal = $("showInternalProjects").checked;
+      refresh().catch((error) => toast(error.message));
+    };
     $("backHome").onclick = () => {
       $("detailView").classList.add("hidden");
       $("homeView").classList.remove("hidden");

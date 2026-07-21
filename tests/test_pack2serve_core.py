@@ -708,6 +708,24 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(servers[0]["connectAddress"], "127.0.0.1:25610")
             self.assertEqual(servers[0]["runtimeStatus"], "stopped")
 
+    def test_panel_service_hides_internal_verification_projects_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            public_server = tmp_path / "workspace/servers/my-public-server"
+            internal_server = tmp_path / "workspace/servers/full-verification/sample-server"
+            public_server.joinpath("pack2serve").mkdir(parents=True)
+            internal_server.joinpath("pack2serve").mkdir(parents=True)
+            _write_minimal_build_report(public_server, name="Public Server")
+            _write_minimal_build_report(internal_server, name="Internal Server")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            public = service.list_servers()
+            all_servers = service.list_servers(include_internal=True)
+
+            self.assertEqual([server["targetName"] for server in public], ["my-public-server"])
+            self.assertEqual({server["targetName"] for server in all_servers}, {"my-public-server", "full-verification/sample-server"})
+            self.assertFalse(public[0]["internalProject"])
+
     def test_panel_service_starts_and_stops_generated_server_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -873,6 +891,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('id="projectGrid"', PANEL_HTML)
         self.assertIn('id="createDialog"', PANEL_HTML)
         self.assertIn('id="consoleCommand"', PANEL_HTML)
+        self.assertIn('id="showInternalProjects"', PANEL_HTML)
 
     def test_compatibility_audit_requires_startup_validation_for_equivalence(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -166,7 +166,7 @@ class PanelService:
                 job.finished_at = time.time()
                 job.log_lines.append(f"失败: {exc}")
 
-    def list_servers(self) -> list[dict[str, object]]:
+    def list_servers(self, *, include_internal: bool = False) -> list[dict[str, object]]:
         if not self.servers_dir.exists():
             return []
         servers: list[dict[str, object]] = []
@@ -174,7 +174,11 @@ class PanelService:
             data = json.loads(report_path.read_text(encoding="utf-8"))
             server_dir = report_path.parents[1]
             target_name = server_dir.relative_to(self.servers_dir).as_posix()
+            internal_project = _is_internal_project(target_name)
+            if internal_project and not include_internal:
+                continue
             summary = _summary_from_report(target_name, data)
+            summary["internalProject"] = internal_project
             summary.update(self.server_runtime_status(target_name))
             servers.append(summary)
         return servers
@@ -454,6 +458,15 @@ def _summary_from_report(target_name: str, report: dict[str, object]) -> dict[st
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._").lower()
     return slug or "server"
+
+
+def _is_internal_project(target_name: str) -> bool:
+    first = target_name.split("/", 1)[0]
+    return (
+        first in {"full-verification", "integration", "verification"}
+        or first.startswith("startup-verification-")
+        or target_name == "panel-check"
+    )
 
 
 def _default_start_command(server_dir: Path) -> list[str]:
