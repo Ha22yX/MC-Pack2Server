@@ -9,6 +9,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from pack2serve import panel as panel_module
 from pack2serve.builder import ServerBuilder
 from pack2serve.cli import main
 from pack2serve.compatibility import audit_generated_server
@@ -820,6 +821,97 @@ class Pack2ServeCoreTests(unittest.TestCase):
             stopped = service.stop_server("sample-server")
             self.assertEqual(stopped["runtimeStatus"], "stopped")
 
+    def test_panel_service_rejects_start_when_world_session_lock_remains_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world").mkdir()
+            (server_dir / "world/session.lock").write_bytes(b"\0\0\0")
+            (server_dir / "server.properties").write_text("server-port=25655\nlevel-name=world\n", encoding="utf-8")
+            (server_dir / "start.ps1").write_text("Write-Output started\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="Locked Sample")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            with patch("pack2serve.panel._world_session_lock_is_active", return_value=True), patch(
+                "pack2serve.panel._terminate_external_processes_for_path", return_value=[]
+            ), patch(
+                "pack2serve.panel._find_external_processes_for_path", return_value=[]
+            ), patch("pack2serve.panel.subprocess.Popen") as popen:
+                with self.assertRaises(ValueError) as raised:
+                    service.start_server("sample-server")
+
+            self.assertIn("world is locked", str(raised.exception))
+            popen.assert_not_called()
+
+    def test_panel_service_reports_external_project_process_as_running(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world").mkdir()
+            (server_dir / "world/session.lock").write_bytes(b"\0\0\0")
+            (server_dir / "server.properties").write_text("server-port=25655\nlevel-name=world\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="External Sample")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            with patch("pack2serve.panel._world_session_lock_is_active", return_value=True), patch(
+                "pack2serve.panel._find_external_processes_for_path", return_value=[4321]
+            ):
+                status = service.server_runtime_status("sample-server")
+
+            self.assertEqual(status["runtimeStatus"], "running")
+            self.assertEqual(status["pid"], 4321)
+            self.assertTrue(status["externalProcess"])
+
+    def test_panel_service_start_does_not_duplicate_external_project_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world").mkdir()
+            (server_dir / "world/session.lock").write_bytes(b"\0\0\0")
+            (server_dir / "server.properties").write_text("server-port=25655\nlevel-name=world\n", encoding="utf-8")
+            (server_dir / "start.ps1").write_text("Write-Output started\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="External Sample")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            with patch("pack2serve.panel._world_session_lock_is_active", return_value=True), patch(
+                "pack2serve.panel._find_external_processes_for_path", return_value=[4321]
+            ), patch("pack2serve.panel.subprocess.Popen") as popen:
+                status = service.start_server("sample-server")
+
+            self.assertEqual(status["runtimeStatus"], "running")
+            self.assertTrue(status["externalProcess"])
+            popen.assert_not_called()
+
+    def test_panel_service_stop_terminates_external_project_process(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world").mkdir()
+            (server_dir / "world/session.lock").write_bytes(b"\0\0\0")
+            (server_dir / "server.properties").write_text("server-port=25655\nlevel-name=world\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="External Sample")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            with patch("pack2serve.panel._terminate_external_processes_for_path", return_value=[4321]) as terminate, patch(
+                "pack2serve.panel._world_session_lock_is_active", return_value=False
+            ):
+                status = service.stop_server("sample-server")
+
+            self.assertEqual(status["runtimeStatus"], "stopped")
+            terminate.assert_called_once_with(server_dir.resolve())
+
+    def test_external_process_lookup_includes_session_lock_owners(self) -> None:
+        with patch("pack2serve.panel._world_session_lock_path", return_value=Path("session.lock")), patch(
+            "pack2serve.panel._find_processes_locking_file", return_value=[4321]
+        ), patch("pack2serve.panel._find_processes_by_command_line_for_path", return_value=[9876, 4321]):
+            processes = panel_module._find_external_processes_for_path(Path("server"))
+
+        self.assertEqual(processes, [4321, 9876])
+
     def test_panel_service_reads_server_log_tail(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1607,6 +1699,18 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertNotIn('id="metricReview"', PANEL_HTML)
         self.assertNotIn("$('metricVerified')", PANEL_HTML)
         self.assertNotIn("$('metricReview')", PANEL_HTML)
+
+    def test_panel_logs_pause_autoscroll_and_color_start_separators(self) -> None:
+        refresh_logs = PANEL_HTML.split("async function refreshLogs()", 1)[1].split("async function sendCommand", 1)[0]
+
+        self.assertIn("function renderLogLines", PANEL_HTML)
+        self.assertIn("log-start-line", PANEL_HTML)
+        self.assertIn("function isLogNearBottom", PANEL_HTML)
+        self.assertIn("logPinnedToBottom", PANEL_HTML)
+        self.assertIn('addEventListener("scroll"', PANEL_HTML)
+        self.assertIn("const shouldStick = state.logPinnedToBottom || isLogNearBottom(logBody)", refresh_logs)
+        self.assertIn("if (shouldStick)", refresh_logs)
+        self.assertNotIn('$("logBody").scrollTop = $("logBody").scrollHeight', refresh_logs)
 
     def test_panel_runtime_overview_connection_address_can_be_copied(self) -> None:
         refresh_metrics = PANEL_HTML.split("async function refreshMetrics()", 1)[1].split("async function refreshLogs", 1)[0]

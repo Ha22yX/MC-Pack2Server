@@ -533,6 +533,16 @@ PANEL_HTML = r"""<!doctype html>
       white-space: pre-wrap;
       word-break: break-word;
     }
+    .log-start-line {
+      display: block;
+      margin: 10px 0 8px;
+      padding: 7px 10px;
+      border-left: 4px solid #48c798;
+      border-radius: 8px;
+      background: rgb(72 199 152 / .16);
+      color: #9af3cb;
+      font-weight: 800;
+    }
     .console-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: 10px; }
     .progress-card {
       border: 1px solid var(--line);
@@ -856,7 +866,7 @@ PANEL_HTML = r"""<!doctype html>
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds", "files"]);
     const HOME_ROUTE = "#/projects";
     const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false, filePath: "" };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false, filePath: "", logPinnedToBottom: true };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -1007,6 +1017,7 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     async function startServer(targetName) {
+      state.logPinnedToBottom = true;
       const payload = await api("/api/servers/start", { method: "POST", body: JSON.stringify({ targetName }) });
       toast(`已发送启动命令：${payload.server.connectAddress}`);
       await refresh();
@@ -1060,8 +1071,32 @@ PANEL_HTML = r"""<!doctype html>
     async function refreshLogs() {
       if (!state.selected || state.tab !== "logs") return;
       const payload = await api(`/api/servers/logs?targetName=${encodeURIComponent(state.selected.targetName)}&maxLines=500`);
-      $("logBody").textContent = payload.log.lines.join("\n") || "暂无日志。";
-      $("logBody").scrollTop = $("logBody").scrollHeight;
+      const logBody = $("logBody");
+      const shouldStick = state.logPinnedToBottom || isLogNearBottom(logBody);
+      logBody.innerHTML = renderLogLines(payload.log.lines);
+      if (shouldStick) {
+        logBody.scrollTop = logBody.scrollHeight;
+        state.logPinnedToBottom = true;
+      }
+    }
+
+    function renderLogLines(lines) {
+      if (!lines.length) return escapeHtml("暂无日志。");
+      return lines.map((line) => {
+        const escaped = escapeHtml(line);
+        if (line.includes("Pack2Serve panel start") || line.includes("Pack2Serve panel preflight")) {
+          return `<span class="log-start-line">${escaped}</span>`;
+        }
+        return escaped;
+      }).join("\n");
+    }
+
+    function isLogNearBottom(element) {
+      return element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+    }
+
+    function onLogScroll() {
+      state.logPinnedToBottom = isLogNearBottom($("logBody"));
     }
 
     async function sendCommand() {
@@ -1455,6 +1490,7 @@ PANEL_HTML = r"""<!doctype html>
     $("createWorld").onclick = () => runAction(createWorld);
     $("consoleCommand").addEventListener("input", () => refreshCommandSuggestions().catch(() => {}));
     $("consoleCommand").addEventListener("keydown", (event) => { if (event.key === "Enter") runAction(sendCommand); if (event.key === "Escape") $("commandSuggestions").classList.add("hidden"); });
+    $("logBody").addEventListener("scroll", onLogScroll);
     document.querySelectorAll(".tab").forEach((button) => button.onclick = () => setTab(button.dataset.tab));
     window.addEventListener("hashchange", () => applyRoute());
     setInterval(() => refresh().catch(() => {}), 5000);

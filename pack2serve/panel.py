@@ -250,10 +250,24 @@ class PanelService:
             existing = self._running.get(target_name)
             if existing and existing.process.poll() is None:
                 return self.server_runtime_status(target_name)
+        if _external_project_processes(server_dir):
+            return self.server_runtime_status(target_name)
 
+        with self._lock:
             logs_dir = server_dir / "logs"
             logs_dir.mkdir(parents=True, exist_ok=True)
             log_path = logs_dir / "panel-server.log"
+            try:
+                terminated = _ensure_world_unlocked_for_start(server_dir)
+            except ValueError as exc:
+                with log_path.open("a", encoding="utf-8", errors="replace") as log:
+                    _write_log_line(log, f"\n--- Pack2Serve panel start {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                    _write_log_line(log, f"[Pack2Serve] Startup blocked: {exc}\n")
+                raise
+            if terminated:
+                with log_path.open("a", encoding="utf-8", errors="replace") as log:
+                    _write_log_line(log, f"\n--- Pack2Serve panel preflight {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                    _write_log_line(log, f"[Pack2Serve] Terminated stale process(es) before startup: {', '.join(str(pid) for pid in terminated)}\n")
             command = _default_start_command(server_dir)
             process = subprocess.Popen(
                 command,
@@ -276,18 +290,24 @@ class PanelService:
             return self.server_runtime_status(target_name)
 
     def stop_server(self, target_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
         with self._lock:
             running = self._running.get(target_name)
-            if not running or running.process.poll() is not None:
-                return self.server_runtime_status(target_name)
-            running.status = "stopping"
-            running.stop_requested = True
-            try:
-                if running.process.stdin:
-                    running.process.stdin.write("stop\n")
-                    running.process.stdin.flush()
-            except OSError:
-                pass
+            if running and running.process.poll() is None:
+                running.status = "stopping"
+                running.stop_requested = True
+                try:
+                    if running.process.stdin:
+                        running.process.stdin.write("stop\n")
+                        running.process.stdin.flush()
+                except OSError:
+                    pass
+            else:
+                self._running.pop(target_name, None)
+                running = None
+        if running is None:
+            _terminate_external_processes_for_path(server_dir.resolve())
+            return self.server_runtime_status(target_name)
         try:
             running.process.wait(timeout=30)
         except subprocess.TimeoutExpired:
@@ -328,6 +348,7 @@ class PanelService:
             pid = None
             uptime = 0
             last_lines: list[str] = []
+            external_process = False
             if running:
                 code = running.process.poll()
                 if code is None:
@@ -337,10 +358,17 @@ class PanelService:
                 else:
                     status = "stopped" if running.stop_requested or running.status == "running" else running.status
                 last_lines = running.last_lines[-8:]
+        if status == "stopped":
+            external_pids = _external_project_processes(server_dir)
+            if external_pids:
+                status = "running"
+                pid = external_pids[0]
+                external_process = True
         host = _display_host(self.advertise_host)
         return {
             "runtimeStatus": status,
             "pid": pid,
+            "externalProcess": external_process,
             "uptimeSeconds": uptime,
             "port": port,
             "host": host,
@@ -901,6 +929,61 @@ def _read_server_port(server_dir: Path) -> int:
     return 25565
 
 
+def _ensure_world_unlocked_for_start(server_dir: Path) -> list[int]:
+    lock_path = _world_session_lock_path(server_dir)
+    if not _world_session_lock_is_active(lock_path):
+        return []
+    terminated = _terminate_external_processes_for_path(server_dir.resolve())
+    if not terminated:
+        raise ValueError(_locked_world_message(lock_path))
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not _world_session_lock_is_active(lock_path):
+            return terminated
+        time.sleep(0.1)
+    raise ValueError(_locked_world_message(lock_path))
+
+
+def _external_project_processes(server_dir: Path) -> list[int]:
+    if not _world_session_lock_is_active(_world_session_lock_path(server_dir)):
+        return []
+    return _find_external_processes_for_path(server_dir.resolve())
+
+
+def _world_session_lock_path(server_dir: Path) -> Path:
+    world_name = _read_properties(server_dir / "server.properties").get("level-name", "world") or "world"
+    world_path = Path(world_name)
+    if world_path.is_absolute() or any(part in {"", ".."} for part in world_path.parts):
+        world_path = Path("world")
+    return server_dir / world_path / "session.lock"
+
+
+def _locked_world_message(lock_path: Path) -> str:
+    return (
+        "Minecraft world is locked by another process. "
+        f"Stop the existing server or close the process using {lock_path}."
+    )
+
+
+def _world_session_lock_is_active(lock_path: Path) -> bool:
+    if not lock_path.exists() or os.name != "nt":
+        return False
+    try:
+        import msvcrt
+
+        with lock_path.open("r+b") as handle:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                return True
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            return False
+    except OSError:
+        return True
+
+
 def _display_host(configured_host: str) -> str:
     if configured_host not in {"0.0.0.0", "::", ""}:
         return configured_host
@@ -1372,6 +1455,30 @@ def _prepare_target_for_build(target: Path) -> list[int]:
 
 
 def _terminate_external_processes_for_path(project_dir: Path) -> list[int]:
+    process_ids = _find_external_processes_for_path(project_dir)
+    for pid in process_ids:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    return process_ids
+
+
+def _find_external_processes_for_path(project_dir: Path) -> list[int]:
+    process_ids: list[int] = []
+    lock_path = _world_session_lock_path(project_dir)
+    for pid in _find_processes_locking_file(lock_path):
+        if pid != os.getpid() and pid not in process_ids:
+            process_ids.append(pid)
+    for pid in _find_processes_by_command_line_for_path(project_dir):
+        if pid != os.getpid() and pid not in process_ids:
+            process_ids.append(pid)
+    return process_ids
+
+
+def _find_processes_by_command_line_for_path(project_dir: Path) -> list[int]:
     if os.name != "nt":
         return []
     target = str(project_dir)
@@ -1403,14 +1510,74 @@ def _terminate_external_processes_for_path(project_dir: Path) -> list[int]:
             pid = int(raw)
             if pid != os.getpid() and pid not in process_ids:
                 process_ids.append(pid)
-    for pid in process_ids:
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
     return process_ids
+
+
+def _find_processes_locking_file(path: Path) -> list[int]:
+    if os.name != "nt" or not path.exists():
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:
+        return []
+
+    DWORD = wintypes.DWORD
+    UINT = wintypes.UINT
+    WCHAR = wintypes.WCHAR
+    BOOL = wintypes.BOOL
+    ERROR_MORE_DATA = 234
+    CCH_RM_SESSION_KEY = 32
+    CCH_RM_MAX_APP_NAME = 255
+    CCH_RM_MAX_SVC_NAME = 63
+
+    class FILETIME(ctypes.Structure):
+        _fields_ = [("dwLowDateTime", DWORD), ("dwHighDateTime", DWORD)]
+
+    class RM_UNIQUE_PROCESS(ctypes.Structure):
+        _fields_ = [("dwProcessId", DWORD), ("ProcessStartTime", FILETIME)]
+
+    class RM_PROCESS_INFO(ctypes.Structure):
+        _fields_ = [
+            ("Process", RM_UNIQUE_PROCESS),
+            ("strAppName", WCHAR * (CCH_RM_MAX_APP_NAME + 1)),
+            ("strServiceShortName", WCHAR * (CCH_RM_MAX_SVC_NAME + 1)),
+            ("ApplicationType", DWORD),
+            ("AppStatus", DWORD),
+            ("TSSessionId", DWORD),
+            ("bRestartable", BOOL),
+        ]
+
+    rstrtmgr = ctypes.windll.rstrtmgr
+    session = DWORD(0)
+    session_key = ctypes.create_unicode_buffer(CCH_RM_SESSION_KEY + 1)
+    if rstrtmgr.RmStartSession(ctypes.byref(session), 0, session_key) != 0:
+        return []
+    try:
+        resources = (wintypes.LPCWSTR * 1)(str(path.resolve()))
+        if rstrtmgr.RmRegisterResources(session, 1, resources, 0, None, 0, None) != 0:
+            return []
+        needed = UINT(0)
+        count = UINT(0)
+        reason = DWORD(0)
+        result = rstrtmgr.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reason))
+        if result == 0:
+            return []
+        if result != ERROR_MORE_DATA or needed.value == 0:
+            return []
+        count = UINT(needed.value)
+        processes = (RM_PROCESS_INFO * needed.value)()
+        result = rstrtmgr.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), processes, ctypes.byref(reason))
+        if result != 0:
+            return []
+        process_ids: list[int] = []
+        for index in range(count.value):
+            pid = int(processes[index].Process.dwProcessId)
+            if pid and pid not in process_ids:
+                process_ids.append(pid)
+        return process_ids
+    finally:
+        rstrtmgr.RmEndSession(session)
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
