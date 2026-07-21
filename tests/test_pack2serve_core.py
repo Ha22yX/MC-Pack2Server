@@ -1398,6 +1398,9 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn("/api/servers/mods", PANEL_HTML)
         self.assertIn("/api/servers/key-settings", PANEL_HTML)
         self.assertIn("/api/servers/command-suggestions", PANEL_HTML)
+        self.assertIn("button, input, textarea, select", PANEL_HTML)
+        self.assertIn("appearance: none", PANEL_HTML)
+        self.assertIn("background-image:", PANEL_HTML)
         self.assertNotIn('id="packPath"', PANEL_HTML)
         self.assertNotIn('id="mirrors"', PANEL_HTML)
 

@@ -354,7 +354,7 @@ PANEL_HTML = r"""<!doctype html>
     button.danger { background: var(--danger); }
     button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
     button:disabled { opacity: .55; cursor: progress; }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       min-height: 40px;
       border: 1px solid var(--line);
@@ -364,7 +364,23 @@ PANEL_HTML = r"""<!doctype html>
       padding: 9px 11px;
       outline: none;
     }
-    input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(22 114 95 / .14); }
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image:
+        linear-gradient(45deg, transparent 50%, #30362f 50%),
+        linear-gradient(135deg, #30362f 50%, transparent 50%);
+      background-position:
+        calc(100% - 18px) 50%,
+        calc(100% - 12px) 50%;
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+      padding-right: 34px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    select::-ms-expand { display: none; }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(22 114 95 / .14); }
     textarea { resize: vertical; }
     .app-shell { min-height: 100dvh; }
     .topbar {
