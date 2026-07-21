@@ -575,6 +575,28 @@ class PanelService:
             "note": "切换当前世界会写入 server.properties 的 level-name，重启服务器后生效。",
         }
 
+    def server_files(self, target_name: str, relative_path: str = "") -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        directory = _safe_project_file_path(server_dir, relative_path)
+        if not directory.is_dir():
+            raise ValueError(f"Not a directory: {relative_path}")
+        current_path = directory.relative_to(server_dir).as_posix()
+        if current_path == ".":
+            current_path = ""
+        entries = [_file_manager_entry(path, root=server_dir) for path in directory.iterdir()]
+        entries.sort(key=lambda entry: (entry["kind"] != "directory", str(entry["name"]).lower()))
+        parent_path = None
+        if current_path:
+            parent = directory.parent.relative_to(server_dir).as_posix()
+            parent_path = "" if parent == "." else parent
+        return {
+            "targetName": target_name,
+            "root": str(server_dir),
+            "currentPath": current_path,
+            "parentPath": parent_path,
+            "entries": entries,
+        }
+
     def create_world(self, target_name: str, world_name: str) -> dict[str, object]:
         server_dir = self._server_dir(target_name)
         clean_name = _safe_world_name(world_name)
@@ -1184,6 +1206,33 @@ def _world_entry(path: Path, *, current_world: str) -> dict[str, object]:
         "sizeBytes": _directory_size(path),
         "hasLevelDat": (path / "level.dat").exists(),
         "lastModified": int(path.stat().st_mtime) if path.exists() else None,
+    }
+
+
+def _safe_project_file_path(root: Path, relative_path: str) -> Path:
+    raw = str(relative_path or "").replace("\\", "/").strip("/")
+    relative = Path(raw)
+    if relative.is_absolute() or any(part in {"..", ""} for part in relative.parts):
+        raise ValueError("Invalid project file path.")
+    resolved = (root / relative).resolve() if raw else root.resolve()
+    root_resolved = root.resolve()
+    if resolved != root_resolved and root_resolved not in resolved.parents:
+        raise ValueError("Invalid project file path.")
+    if not resolved.exists():
+        raise ValueError(f"Unknown project file path: {relative_path}")
+    return resolved
+
+
+def _file_manager_entry(path: Path, *, root: Path) -> dict[str, object]:
+    stat = path.stat()
+    kind = "directory" if path.is_dir() else "file"
+    return {
+        "name": path.name,
+        "relativePath": path.relative_to(root).as_posix(),
+        "kind": kind,
+        "sizeBytes": None if kind == "directory" else stat.st_size,
+        "lastModified": int(stat.st_mtime),
+        "extension": path.suffix.lower() if kind == "file" else "",
     }
 
 

@@ -1440,6 +1440,35 @@ class Pack2ServeCoreTests(unittest.TestCase):
             with zipfile.ZipFile(backup["backupPath"]) as archive:
                 self.assertIn("New World/", archive.namelist())
 
+    def test_panel_service_browses_project_files_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "mods").mkdir()
+            (server_dir / "mods/example.jar").write_bytes(b"mod")
+            (server_dir / "server.properties").write_text("server-port=25655\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+
+            root = service.server_files("sample-server")
+            mods = service.server_files("sample-server", "mods")
+
+            self.assertEqual(root["currentPath"], "")
+            self.assertIsNone(root["parentPath"])
+            self.assertLess(
+                [entry["name"] for entry in root["entries"]].index("mods"),
+                [entry["name"] for entry in root["entries"]].index("server.properties"),
+            )
+            self.assertEqual(mods["currentPath"], "mods")
+            self.assertEqual(mods["parentPath"], "")
+            self.assertEqual(mods["entries"][0]["name"], "example.jar")
+            self.assertEqual(mods["entries"][0]["kind"], "file")
+            self.assertEqual(mods["entries"][0]["sizeBytes"], 3)
+
+            with self.assertRaises(ValueError):
+                service.server_files("sample-server", "../outside")
+
     def test_panel_service_deletes_project_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1510,6 +1539,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('id="playerDetail"', PANEL_HTML)
         self.assertIn('id="modsList"', PANEL_HTML)
         self.assertIn('id="worldsList"', PANEL_HTML)
+        self.assertIn('id="filesList"', PANEL_HTML)
+        self.assertIn('id="filesBreadcrumbs"', PANEL_HTML)
         self.assertIn('id="createWorld"', PANEL_HTML)
         self.assertIn('id="keySettings"', PANEL_HTML)
         self.assertIn('id="commandSuggestions"', PANEL_HTML)
@@ -1542,6 +1573,10 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn("/api/servers/metrics", PANEL_HTML)
         self.assertIn("/api/servers/mods", PANEL_HTML)
         self.assertIn("/api/servers/worlds", PANEL_HTML)
+        self.assertIn("/api/servers/files", PANEL_HTML)
+        self.assertIn('data-tab="files"', PANEL_HTML)
+        self.assertIn('function loadFiles', PANEL_HTML)
+        self.assertIn('function fileRow', PANEL_HTML)
         self.assertIn('world-row${world.current ? " current" : ""}', PANEL_HTML)
         self.assertIn(".world-row.current", PANEL_HTML)
         self.assertIn("/api/servers/key-settings", PANEL_HTML)

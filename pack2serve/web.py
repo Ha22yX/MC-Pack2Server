@@ -61,6 +61,16 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                 if route == "/api/servers/worlds":
                     self._send_json({"worlds": service.server_worlds(query.get("targetName", [""])[0])})
                     return
+                if route == "/api/servers/files":
+                    self._send_json(
+                        {
+                            "files": service.server_files(
+                                query.get("targetName", [""])[0],
+                                query.get("path", [""])[0],
+                            )
+                        }
+                    )
+                    return
                 if route == "/api/servers/command-suggestions":
                     self._send_json(
                         {
@@ -573,7 +583,7 @@ PANEL_HTML = r"""<!doctype html>
     .mod-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
     .mod-toolbar input { width: auto; flex: 1; }
     .mod-list { display: grid; gap: 9px; }
-    .mod-row, .world-row {
+    .mod-row, .world-row, .file-row {
       display: grid;
       grid-template-columns: 42px minmax(0, 1fr) auto;
       gap: 10px;
@@ -583,6 +593,9 @@ PANEL_HTML = r"""<!doctype html>
       background: #fffefa;
       padding: 9px;
     }
+    .file-row { cursor: default; }
+    .file-row.directory { cursor: pointer; }
+    .file-row.directory:hover { border-color: var(--accent); background: #f1fbf6; }
     .world-row.current {
       border-color: var(--accent);
       background: #f1fbf6;
@@ -599,6 +612,19 @@ PANEL_HTML = r"""<!doctype html>
       place-items: center;
       font-weight: 900;
     }
+    .file-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: #e4e1d7;
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      font-size: 12px;
+    }
+    .file-row.directory .file-icon { background: #d6eee5; color: #176246; }
+    .file-breadcrumbs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+    .file-breadcrumbs button { min-height: 30px; padding: 5px 9px; font-size: 12px; }
     .command-wrap { position: relative; }
     .suggestions {
       position: absolute;
@@ -741,6 +767,7 @@ PANEL_HTML = r"""<!doctype html>
               <button class="tab" data-tab="players">在线玩家</button>
               <button class="tab" data-tab="mods">模组列表</button>
               <button class="tab" data-tab="worlds">世界</button>
+              <button class="tab" data-tab="files">文件管理</button>
             </div>
             <div id="tabStatus" class="hidden">
               <div class="metrics-grid" id="metricsGrid"></div>
@@ -779,6 +806,10 @@ PANEL_HTML = r"""<!doctype html>
                 <button class="primary" id="createWorld">新建世界</button>
               </div>
               <div class="mod-list" id="worldsList"></div>
+            </div>
+            <div id="tabFiles" class="hidden">
+              <div class="file-breadcrumbs" id="filesBreadcrumbs"></div>
+              <div class="mod-list" id="filesList"></div>
             </div>
           </div>
           <aside class="panel">
@@ -824,10 +855,10 @@ PANEL_HTML = r"""<!doctype html>
 
   <script>
     const $ = (id) => document.getElementById(id);
-    const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds"]);
+    const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds", "files"]);
     const HOME_ROUTE = "#/projects";
     const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false, filePath: "" };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -959,6 +990,7 @@ PANEL_HTML = r"""<!doctype html>
       state.selected = server;
       if (changedProject) {
         state.selectedPlayer = "";
+        state.filePath = "";
       }
       $("homeView").classList.add("hidden");
       $("detailView").classList.remove("hidden");
@@ -1246,6 +1278,45 @@ PANEL_HTML = r"""<!doctype html>
       await loadWorlds();
     }
 
+    async function loadFiles(path = state.filePath) {
+      if (!state.selected || state.tab !== "files") return;
+      const payload = await api(`/api/servers/files?targetName=${encodeURIComponent(state.selected.targetName)}&path=${encodeURIComponent(path || "")}`);
+      const files = payload.files;
+      state.filePath = files.currentPath || "";
+      $("filesBreadcrumbs").innerHTML = fileBreadcrumbs(files.currentPath);
+      $("filesList").innerHTML = files.entries.map(fileRow).join("") || `<div class="subtle">当前目录为空。</div>`;
+    }
+
+    function fileBreadcrumbs(currentPath) {
+      const parts = currentPath ? currentPath.split("/") : [];
+      const crumbs = [`<button class="secondary" onclick="runAction(() => openFilePath(''))">项目根目录</button>`];
+      parts.forEach((part, index) => {
+        const path = parts.slice(0, index + 1).join("/");
+        crumbs.push(`<button class="secondary" onclick="runAction(() => openFilePath('${escapeAttr(path)}'))">${escapeHtml(part)}</button>`);
+      });
+      return crumbs.join("");
+    }
+
+    function fileRow(entry) {
+      const isDirectory = entry.kind === "directory";
+      const action = isDirectory ? ` onclick="runAction(() => openFilePath('${escapeAttr(entry.relativePath)}'))"` : "";
+      const size = isDirectory ? "文件夹" : formatBytes(entry.sizeBytes);
+      const modified = entry.lastModified ? new Date(entry.lastModified * 1000).toLocaleString() : "未知时间";
+      return `<div class="file-row ${escapeAttr(entry.kind)}"${action}>
+        <div class="file-icon">${isDirectory ? "DIR" : "FILE"}</div>
+        <div>
+          <strong>${escapeHtml(entry.name)}</strong>
+          <div class="subtle">${escapeHtml(entry.relativePath)}</div>
+        </div>
+        <div class="subtle">${escapeHtml(size)} / ${escapeHtml(modified)}</div>
+      </div>`;
+    }
+
+    async function openFilePath(path) {
+      state.filePath = path || "";
+      await loadFiles(state.filePath);
+    }
+
     function setTab(tab, options = { updateRoute: true }) {
       const cleanTab = normalizeTab(tab);
       if (options.updateRoute && state.selected) {
@@ -1257,7 +1328,7 @@ PANEL_HTML = r"""<!doctype html>
       }
       state.tab = cleanTab;
       document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === cleanTab));
-      ["Status", "Logs", "Properties", "Players", "Mods", "Worlds"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", cleanTab !== name.toLowerCase()));
+      ["Status", "Logs", "Properties", "Players", "Mods", "Worlds", "Files"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", cleanTab !== name.toLowerCase()));
       refreshVisibleTab();
     }
 
@@ -1268,6 +1339,7 @@ PANEL_HTML = r"""<!doctype html>
       if (state.tab === "players") await refreshPlayers();
       if (state.tab === "mods") await loadMods();
       if (state.tab === "worlds") await loadWorlds();
+      if (state.tab === "files") await loadFiles();
     }
 
     function updateCreateButton() {
@@ -1395,6 +1467,7 @@ PANEL_HTML = r"""<!doctype html>
     setInterval(() => refreshPlayers().catch(() => {}), 3000);
     setInterval(() => loadMods().catch(() => {}), 8000);
     setInterval(() => loadWorlds().catch(() => {}), 8000);
+    setInterval(() => loadFiles().catch(() => {}), 8000);
     updateCreateButton();
     if (!location.hash) location.hash = HOME_ROUTE;
     restoreActiveJob();
