@@ -75,14 +75,14 @@ def write_playerdata_nbt(path: Path) -> None:
     path.write_bytes(gzip.compress(payload))
 
 
-def _write_minimal_build_report(server_dir: Path, *, name: str) -> None:
+def _write_minimal_build_report(server_dir: Path, *, name: str, minecraft_version: str = "1.20.1") -> None:
     report = {
         "pack": {
             "source_path": "sample.mrpack",
             "format": "modrinth",
             "name": name,
             "version": "1.0.0",
-            "minecraft_version": "1.20.1",
+            "minecraft_version": minecraft_version,
             "loader": {"name": "fabric-loader", "version": "0.18.4"},
             "override_root": "overrides",
             "remote_files": [],
@@ -151,6 +151,70 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertIsNotNone(icon)
             self.assertTrue(str(icon).startswith("data:image/png;base64,"))
+
+    def test_panel_service_lists_online_and_offline_players(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            (server_dir / "world/playerdata").mkdir(parents=True)
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+            (server_dir / "logs/panel-server.log").write_text(
+                "[Server thread/INFO]: Steve joined the game\n",
+                encoding="utf-8",
+            )
+            write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
+
+            players = PanelService(tmp_path / "workspace").server_players("sample-server")
+
+            self.assertEqual(players["inventoryCompatibility"]["supported"], True)
+            self.assertEqual(players["onlinePlayers"][0]["name"], "Steve")
+            self.assertEqual(players["offlinePlayers"][0]["uuid"], "11111111-2222-3333-4444-555555555555")
+
+    def test_panel_service_reads_offline_player_inventory_with_icons(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world/playerdata").mkdir(parents=True)
+            (server_dir / "mods").mkdir()
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+            write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
+            write_zip(
+                server_dir / "mods/example.jar",
+                {
+                    "assets/minecraft/models/item/stone.json": json.dumps(
+                        {"parent": "item/generated", "textures": {"layer0": "minecraft:item/stone"}}
+                    ),
+                    "assets/minecraft/textures/item/stone.png": b"\x89PNG\r\n\x1a\nstone",
+                },
+            )
+
+            inventory = PanelService(tmp_path / "workspace").player_inventory(
+                "sample-server",
+                "11111111-2222-3333-4444-555555555555",
+                source="offline",
+            )
+
+            self.assertEqual(inventory["status"], "ready")
+            self.assertEqual(inventory["inventory"][0]["id"], "minecraft:stone")
+            self.assertTrue(str(inventory["inventory"][0]["iconDataUrl"]).startswith("data:image/png;base64,"))
+
+    def test_panel_service_rejects_inventory_view_for_old_minecraft_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/rlcraft"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            _write_minimal_build_report(server_dir, name="RLCraft", minecraft_version="1.12.2")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+
+            inventory = PanelService(tmp_path / "workspace").player_inventory("rlcraft", "Steve", source="online")
+
+            self.assertEqual(inventory["status"], "unsupported")
+            self.assertEqual(inventory["reason"], "minecraft-version-too-old")
 
     def test_parse_modrinth_mrpack_reads_dependencies_and_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -2107,6 +2171,14 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn("background-image:", PANEL_HTML)
         self.assertNotIn('id="packPath"', PANEL_HTML)
         self.assertNotIn('id="mirrors"', PANEL_HTML)
+
+    def test_panel_html_contains_player_inventory_view_markers(self) -> None:
+        self.assertIn('data-tab="players">玩家</button>', PANEL_HTML)
+        self.assertIn('id="onlinePlayersList"', PANEL_HTML)
+        self.assertIn('id="offlinePlayersList"', PANEL_HTML)
+        self.assertIn('class="inventory-grid"', PANEL_HTML)
+        self.assertIn('item-tooltip', PANEL_HTML)
+        self.assertIn("/api/servers/player-inventory", PANEL_HTML)
 
     def test_panel_web_lifecycle_cleans_stale_processes_and_shutdowns_on_exit(self) -> None:
         service = Mock()

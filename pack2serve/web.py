@@ -56,6 +56,17 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                 if route == "/api/servers/players":
                     self._send_json({"players": service.server_players(query.get("targetName", [""])[0])})
                     return
+                if route == "/api/servers/player-inventory":
+                    self._send_json(
+                        {
+                            "inventory": service.player_inventory(
+                                query.get("targetName", [""])[0],
+                                query.get("player", [""])[0],
+                                source=query.get("source", ["online"])[0],
+                            )
+                        }
+                    )
+                    return
                 if route == "/api/servers/metrics":
                     self._send_json({"metrics": service.server_metrics(query.get("targetName", [""])[0])})
                     return
@@ -607,10 +618,60 @@ PANEL_HTML = r"""<!doctype html>
       font-weight: 760;
     }
     .players { display: grid; gap: 8px; }
+    .player-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .player-section { display: grid; gap: 8px; align-content: start; }
     .player-row { display: flex; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fffefa; cursor: pointer; }
     .player-row.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(22 114 95 / .12); }
     .player-profile { display: grid; grid-template-columns: 72px 1fr; gap: 12px; align-items: start; margin-bottom: 12px; }
     .player-skin { width: 64px; height: 64px; border-radius: 8px; image-rendering: pixelated; background: #e4e1d7; }
+    .inventory-panel { margin-top: 14px; display: grid; gap: 12px; }
+    .inventory-layout {
+      display: grid;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #d7d2c4;
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / .45);
+    }
+    .equipment-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: start; }
+    .inventory-grid { display: grid; grid-template-columns: repeat(9, 42px); gap: 4px; }
+    .equipment-grid { display: grid; grid-template-columns: repeat(5, 42px); gap: 4px; }
+    .accessory-grid { display: grid; grid-template-columns: repeat(auto-fill, 42px); gap: 4px; min-height: 42px; }
+    .item-slot {
+      position: relative;
+      width: 42px;
+      height: 42px;
+      border: 2px solid #8b867b;
+      border-top-color: #5f5a50;
+      border-left-color: #5f5a50;
+      background: #b9b3a5;
+      display: grid;
+      place-items: center;
+    }
+    .item-slot img { width: 32px; height: 32px; image-rendering: pixelated; object-fit: contain; }
+    .item-placeholder { width: 28px; height: 28px; border-radius: 6px; background: #8f897d; color: #f8f4e9; display: grid; place-items: center; font-size: 11px; font-weight: 900; }
+    .item-count { position: absolute; right: 2px; bottom: 0; color: white; text-shadow: 1px 1px 0 #222; font: 700 12px Consolas, monospace; }
+    .item-tooltip {
+      display: none;
+      position: absolute;
+      left: 36px;
+      top: 0;
+      z-index: 30;
+      min-width: 220px;
+      max-width: 360px;
+      padding: 8px 10px;
+      border: 1px solid #5b3c92;
+      border-radius: 4px;
+      background: rgba(22, 14, 32, .96);
+      color: #f4ecff;
+      box-shadow: 0 8px 20px rgb(0 0 0 / .28);
+      font: 12px/1.4 Consolas, "Cascadia Mono", monospace;
+      pointer-events: none;
+      overflow-wrap: anywhere;
+    }
+    .item-slot:hover .item-tooltip { display: block; }
+    .inventory-title { font-weight: 850; margin-bottom: 6px; }
     .mod-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
     .mod-toolbar input { width: auto; flex: 1; }
     .mod-list { display: grid; gap: 9px; }
@@ -800,7 +861,7 @@ PANEL_HTML = r"""<!doctype html>
               <button class="tab" data-tab="status">运行总览</button>
               <button class="tab active" data-tab="logs">日志控制台</button>
               <button class="tab" data-tab="properties">服务器参数</button>
-              <button class="tab" data-tab="players">在线玩家</button>
+              <button class="tab" data-tab="players">玩家</button>
               <button class="tab" data-tab="mods">模组列表</button>
               <button class="tab" data-tab="worlds">世界</button>
               <button class="tab" data-tab="files">文件管理</button>
@@ -826,7 +887,18 @@ PANEL_HTML = r"""<!doctype html>
               <div class="card-actions"><button class="primary" id="saveProperties">保存 server.properties</button></div>
             </div>
             <div id="tabPlayers" class="hidden">
-              <div class="players" id="playersList"></div>
+              <div class="players" id="playersList">
+                <div class="player-columns">
+                  <div class="player-section">
+                    <h3>在线玩家</h3>
+                    <div id="onlinePlayersList"></div>
+                  </div>
+                  <div class="player-section">
+                    <h3>离线玩家</h3>
+                    <div id="offlinePlayersList"></div>
+                  </div>
+                </div>
+              </div>
               <div class="mini-card" id="playerDetail" style="margin-top:12px"></div>
             </div>
             <div id="tabMods" class="hidden">
@@ -908,7 +980,7 @@ PANEL_HTML = r"""<!doctype html>
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds", "files"]);
     const HOME_ROUTE = "#/projects";
     const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], onlinePlayers: [], offlinePlayers: [], selectedPlayer: "", selectedPlayerSource: "online", playerInventory: null, creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -1212,43 +1284,128 @@ PANEL_HTML = r"""<!doctype html>
     async function refreshPlayers() {
       if (!state.selected || state.tab !== "players") return;
       const payload = await api(`/api/servers/players?targetName=${encodeURIComponent(state.selected.targetName)}`);
-      state.players = payload.players.players;
-      $("playersList").innerHTML = state.players.map(playerRow).join("") || `<div class="subtle">当前没有从日志中识别到在线玩家。启动服务器并让玩家进入后，列表会定时刷新。</div>`;
+      state.onlinePlayers = payload.players.onlinePlayers || payload.players.players || [];
+      state.offlinePlayers = payload.players.offlinePlayers || [];
+      state.players = [...state.onlinePlayers, ...state.offlinePlayers];
+      $("onlinePlayersList").innerHTML = state.onlinePlayers.map((player) => playerRow(player, "online")).join("") || `<div class="subtle">当前没有在线玩家。</div>`;
+      $("offlinePlayersList").innerHTML = state.offlinePlayers.map((player) => playerRow(player, "offline")).join("") || `<div class="subtle">当前世界没有可读取的离线 playerdata。</div>`;
       renderPlayerDetail();
     }
 
-    function playerRow(player) {
+    function playerRow(player, source) {
       const position = formatVector(player.position, "坐标未知");
-      const active = state.selectedPlayer === player.name ? " active" : "";
-      return `<div class="player-row${active}" onclick="selectPlayer('${escapeAttr(player.name)}')"><strong>${escapeHtml(player.name)}</strong><span class="subtle">${escapeHtml(player.gameMode)} / ${escapeHtml(position)}</span></div>`;
+      const key = player.uuid || player.name;
+      const active = state.selectedPlayer === key && state.selectedPlayerSource === source ? " active" : "";
+      const meta = source === "offline" ? `离线 / ${escapeHtml(player.uuid || "")}` : `${escapeHtml(player.gameMode)} / ${escapeHtml(position)}`;
+      return `<div class="player-row${active}" onclick="selectPlayer('${escapeAttr(key)}', '${source}')"><strong>${escapeHtml(player.name || key)}</strong><span class="subtle">${meta}</span></div>`;
     }
 
-    function selectPlayer(name) {
+    function selectPlayer(name, source = "online") {
       state.selectedPlayer = name;
+      state.selectedPlayerSource = source;
+      state.playerInventory = null;
       renderPlayerDetail();
-      runAction(() => playerAction("probe", { player: name }));
+      if (source === "online") runAction(() => playerAction("probe", { player: name }));
+      runAction(() => loadPlayerInventory());
     }
 
     function renderPlayerDetail() {
-      const player = state.players.find((item) => item.name === state.selectedPlayer);
+      const player = selectedPlayerRecord();
       if (!player) {
-        $("playerDetail").innerHTML = `<div class="subtle">点击玩家查看位置、朝向、复活点、皮肤和管理操作。</div>`;
+        $("playerDetail").innerHTML = `<div class="subtle">点击玩家查看位置、朝向、皮肤、背包和管理操作。</div>`;
         return;
       }
       const pos = formatVector(player.position, "等待探测");
       const rot = formatRotation(player.rotation, "等待探测");
+      const isOnline = state.selectedPlayerSource === "online";
       $("playerDetail").innerHTML = `
         <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3>${escapeHtml(player.name)}</h3><div class="subtle">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
-        <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("复活点", player.respawnPoint || "暂未接入读取")}${metricCard("背包", player.inventory?.length ? `${player.inventory.length} 项` : "暂未接入读取")}</div>
-        <div class="card-actions">
+        <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("UUID", player.uuid || "在线探针")}${metricCard("背包", inventorySummary())}</div>
+        ${isOnline ? `<div class="card-actions">
           <button class="secondary" onclick="runAction(() => playerAction('probe', { player: '${escapeAttr(player.name)}' }))">刷新状态</button>
+          <button class="secondary" onclick="runAction(() => loadPlayerInventory())">查看背包</button>
           <button class="primary" onclick="runAction(() => playerAction('op', { player: '${escapeAttr(player.name)}' }))">设为 OP</button>
           <button class="secondary" onclick="openPlayerActionDialog('gamemode', '${escapeAttr(player.name)}')">改模式</button>
           <button class="secondary" onclick="openPlayerActionDialog('tp', '${escapeAttr(player.name)}')">TP</button>
           <button class="danger" onclick="openPlayerActionDialog('ban', '${escapeAttr(player.name)}')">封禁</button>
           <button class="danger" onclick="runAction(() => playerAction('kill', { player: '${escapeAttr(player.name)}' }))">杀死</button>
           <button class="danger" onclick="runAction(() => playerAction('clear', { player: '${escapeAttr(player.name)}' }))">清空背包</button>
+        </div>` : `<div class="card-actions"><button class="secondary" onclick="runAction(() => loadPlayerInventory())">查看背包</button></div>`}
+        <div class="inventory-panel">${renderInventoryPanel()}</div>`;
+    }
+
+    function selectedPlayerRecord() {
+      const list = state.selectedPlayerSource === "offline" ? state.offlinePlayers : state.onlinePlayers;
+      return list.find((item) => (item.uuid || item.name) === state.selectedPlayer);
+    }
+
+    async function loadPlayerInventory() {
+      if (!state.selected || !state.selectedPlayer) return;
+      const payload = await api(`/api/servers/player-inventory?targetName=${encodeURIComponent(state.selected.targetName)}&player=${encodeURIComponent(state.selectedPlayer)}&source=${encodeURIComponent(state.selectedPlayerSource)}`);
+      state.playerInventory = payload.inventory;
+      renderPlayerDetail();
+      if (payload.inventory.status === "probing") setTimeout(() => loadPlayerInventory().catch(() => {}), 1600);
+    }
+
+    function inventorySummary() {
+      const inventory = state.playerInventory;
+      if (!inventory) return "点击查看";
+      if (inventory.status === "unsupported") return "版本过低不支持";
+      if (inventory.status === "probing") return "探针读取中";
+      const count = [...(inventory.inventory || []), ...(inventory.enderChest || [])].filter((item) => item && item.id).length;
+      return `${count} 项`;
+    }
+
+    function renderInventoryPanel() {
+      const inventory = state.playerInventory;
+      if (!inventory) return `<div class="subtle">点击“查看背包”读取玩家背包。</div>`;
+      if (inventory.status === "unsupported") return `<div class="subtle">${escapeHtml(inventory.message || "当前版本不支持背包查看。")}</div>`;
+      if (inventory.status === "probing") return `<div class="subtle">${escapeHtml(inventory.message || "正在等待服务器返回背包数据。")}</div>`;
+      return `
+        <div class="inventory-layout">
+          <div>
+            <div class="inventory-title">装备 / 副手</div>
+            <div class="equipment-row">
+              <div class="equipment-grid">${slotGrid(inventory.armor || [], 4, "armor")}${slotGrid(inventory.offhand || [], 1, "offhand")}</div>
+            </div>
+          </div>
+          ${renderAccessories(inventory.accessories || [])}
+          <div>
+            <div class="inventory-title">背包</div>
+            <div class="inventory-grid">${slotGrid(inventory.main || [], 27, "main")}${slotGrid(inventory.hotbar || [], 9, "hotbar")}</div>
+          </div>
+          <div>
+            <div class="inventory-title">末影箱</div>
+            <div class="inventory-grid">${slotGrid(inventory.enderChest || [], 27, "enderChest")}</div>
+          </div>
         </div>`;
+    }
+
+    function renderAccessories(sections) {
+      if (!sections.length) return `<div><div class="inventory-title">饰品栏</div><div class="accessory-grid">${slotGrid([], 8, "accessory")}</div></div>`;
+      return sections.map((section) => `<div><div class="inventory-title">${escapeHtml(section.name || "饰品栏")}</div><div class="accessory-grid">${slotGrid(section.items || [], Math.max(8, (section.items || []).length), "accessory")}</div></div>`).join("");
+    }
+
+    function slotGrid(items, size, section) {
+      const bySlot = new Map((items || []).map((item, index) => [slotIndex(item, section, index), item]));
+      return Array.from({ length: size }, (_, index) => itemSlot(bySlot.get(index))).join("");
+    }
+
+    function slotIndex(item, section, index) {
+      const slot = Number(item?.slot ?? index);
+      if (section === "hotbar") return slot >= 0 && slot <= 8 ? slot : index;
+      if (section === "main") return slot >= 9 && slot <= 35 ? slot - 9 : index;
+      if (section === "armor") return slot >= 100 && slot <= 103 ? slot - 100 : index;
+      if (section === "offhand") return 0;
+      return slot >= 0 ? slot : index;
+    }
+
+    function itemSlot(item) {
+      if (!item || !item.id) return `<div class="item-slot"></div>`;
+      const icon = item.iconDataUrl ? `<img src="${escapeAttr(item.iconDataUrl)}" alt="">` : `<div class="item-placeholder">${escapeHtml(item.id.split(":")[0].slice(0, 2).toUpperCase())}</div>`;
+      const count = Number(item.count || 0) > 1 ? `<span class="item-count">${escapeHtml(item.count)}</span>` : "";
+      const tooltip = (item.tooltip || [item.id]).map((line) => `<div>${escapeHtml(line)}</div>`).join("");
+      return `<div class="item-slot">${icon}${count}<div class="item-tooltip">${tooltip}</div></div>`;
     }
 
     function formatCoordinate(value) {

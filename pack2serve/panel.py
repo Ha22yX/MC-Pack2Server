@@ -15,9 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
+from pack2serve.assets import resolve_item_icon_data_url
 from pack2serve.builder import ServerBuilder
 from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, default_curseforge_providers
 from pack2serve.eula import accept_eula as accept_server_eula
+from pack2serve.inventory import (
+    minecraft_supports_inventory_view,
+    parse_snbt_inventory_list,
+    read_playerdata_inventory,
+)
 from pack2serve.installer import LoaderInstaller, ensure_start_script_uses_nogui, load_loader_plan
 from pack2serve.java import JavaInstaller, load_java_runtime_install_plan
 from pack2serve.validator import ServerValidator
@@ -453,6 +459,8 @@ class PanelService:
             running.process.stdin.write(clean + "\n")
             running.process.stdin.flush()
             running.last_lines.append(f"> {clean}")
+            with running.log_path.open("a", encoding="utf-8", errors="replace") as log:
+                _write_log_line(log, f"> {clean}\n")
         return {
             "targetName": target_name,
             "command": clean,
@@ -511,17 +519,90 @@ class PanelService:
         log_path = server_dir / "logs" / "panel-server.log"
         players = _players_from_log(log_path)
         self._auto_probe_online_players(target_name, players)
+        online_players = list(players.values())
+        offline_players = _offline_players_from_playerdata(server_dir)
+        compatibility = _inventory_compatibility(server_dir)
         return {
             "targetName": target_name,
-            "players": list(players.values()),
+            "players": online_players,
+            "onlinePlayers": online_players,
+            "offlinePlayers": offline_players,
+            "inventoryCompatibility": compatibility,
             "capabilities": {
                 "gameMode": "log-derived",
                 "position": "log-derived-after-probe",
                 "rotation": "log-derived-after-probe",
-                "inventory": "requires-management-probe",
-                "note": "玩家状态先从控制台日志与探测命令推断；完整背包与模组命令树需要服务端管理探针或 RCON 扩展。",
+                "inventory": "minecraft-1.13-data-probe-or-playerdata" if compatibility["supported"] else "unsupported-old-version",
+                "note": "玩家状态先从控制台日志与探测命令推断；背包查看第一版支持 Minecraft 1.13+。",
             },
         }
+
+    def player_inventory(self, target_name: str, player: str, *, source: str = "online") -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        compatibility = _inventory_compatibility(server_dir)
+        if not compatibility["supported"]:
+            return {
+                "targetName": target_name,
+                "player": player,
+                "source": source,
+                "status": "unsupported",
+                "reason": "minecraft-version-too-old",
+                "message": "当前 Minecraft 版本过低，暂不支持背包查看。Pack2Serve 背包查看第一版需要 Minecraft 1.13+。",
+                "compatibility": compatibility,
+            }
+        if source == "offline":
+            player_uuid = _safe_player_uuid(player)
+            playerdata = _playerdata_dir(server_dir) / f"{player_uuid}.dat"
+            if not playerdata.exists():
+                raise ValueError(f"Unknown offline playerdata: {player_uuid}")
+            data = read_playerdata_inventory(playerdata)
+            return {
+                "targetName": target_name,
+                "player": player_uuid,
+                "uuid": player_uuid,
+                "source": "offline",
+                "status": "ready",
+                "compatibility": compatibility,
+                **_inventory_with_icons(server_dir, data),
+            }
+        player_name = _safe_player_name(player)
+        sent_commands = self._probe_player_inventory(target_name, player_name)
+        data = _online_inventory_from_log(server_dir / "logs" / "panel-server.log", player_name)
+        if not data["inventory"] and not data["enderChest"] and not data["armor"] and not data["offhand"]:
+            return {
+                "targetName": target_name,
+                "player": player_name,
+                "source": "online",
+                "status": "probing" if sent_commands else "unavailable",
+                "message": "已发送背包探针，等待服务器日志返回。" if sent_commands else "服务器未运行，无法读取在线玩家实时背包。",
+                "compatibility": compatibility,
+                **_empty_inventory_payload(),
+            }
+        return {
+            "targetName": target_name,
+            "player": player_name,
+            "source": "online",
+            "status": "ready",
+            "compatibility": compatibility,
+            **_inventory_with_icons(server_dir, data),
+        }
+
+    def _probe_player_inventory(self, target_name: str, player: str) -> bool:
+        with self._lock:
+            running = self._running.get(target_name)
+            if not running or running.process.poll() is not None or not running.process.stdin:
+                return False
+        for command in (
+            f"data get entity {player} Inventory",
+            f"data get entity {player} EnderItems",
+            f"data get entity {player} ArmorItems",
+            f"data get entity {player} HandItems",
+        ):
+            try:
+                self.send_console_command(target_name, command)
+            except ValueError:
+                return False
+        return True
 
     def _auto_probe_online_players(self, target_name: str, players: dict[str, dict[str, object]]) -> None:
         if not players:
@@ -1288,6 +1369,160 @@ def _players_from_log(log_path: Path) -> dict[str, dict[str, object]]:
         if left:
             players.pop(left.group(1), None)
     return players
+
+
+def _offline_players_from_playerdata(server_dir: Path) -> list[dict[str, object]]:
+    players: list[dict[str, object]] = []
+    for path in sorted(_playerdata_dir(server_dir).glob("*.dat")):
+        player_uuid = path.stem
+        if not _is_safe_player_uuid(player_uuid):
+            continue
+        stat = path.stat()
+        players.append(
+            {
+                "name": player_uuid,
+                "uuid": player_uuid,
+                "status": "offline",
+                "gameMode": "unknown",
+                "position": None,
+                "rotation": None,
+                "respawnPoint": None,
+                "skinUrl": f"https://minotar.net/avatar/{player_uuid}/64",
+                "inventory": [],
+                "source": "playerdata",
+                "lastModified": int(stat.st_mtime),
+            }
+        )
+    return players
+
+
+def _inventory_compatibility(server_dir: Path) -> dict[str, object]:
+    version = _minecraft_version_from_report(server_dir)
+    supported = minecraft_supports_inventory_view(version)
+    return {
+        "supported": supported,
+        "minecraftVersion": version,
+        "reason": None if supported else "minecraft-version-too-old",
+        "message": "支持 Minecraft 1.13+ 原生背包探针。" if supported else "当前 Minecraft 版本过低，暂不支持背包查看。",
+    }
+
+
+def _minecraft_version_from_report(server_dir: Path) -> str:
+    path = server_dir / "pack2serve" / "build-report.json"
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    pack = data.get("pack", {})
+    return str(pack.get("minecraft_version", "") or "")
+
+
+def _playerdata_dir(server_dir: Path) -> Path:
+    properties = _read_properties(server_dir / "server.properties")
+    world_name = properties.get("level-name", "world") or "world"
+    world_path = Path(world_name)
+    if world_path.is_absolute() or any(part in {"", ".."} for part in world_path.parts):
+        world_path = Path("world")
+    return server_dir / world_path / "playerdata"
+
+
+def _safe_player_uuid(value: str) -> str:
+    clean = value.strip().lower()
+    if not _is_safe_player_uuid(clean):
+        raise ValueError(f"Invalid player UUID: {value}")
+    return clean
+
+
+def _is_safe_player_uuid(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value))
+
+
+def _empty_inventory_payload() -> dict[str, object]:
+    return {
+        "inventory": [],
+        "hotbar": [],
+        "main": [],
+        "armor": [],
+        "offhand": [],
+        "enderChest": [],
+        "accessories": [],
+    }
+
+
+def _inventory_with_icons(server_dir: Path, data: dict[str, object]) -> dict[str, object]:
+    inventory = [_with_icon(server_dir, item) for item in list(data.get("inventory", []))]
+    ender_chest = [_with_icon(server_dir, item) for item in list(data.get("enderChest", []))]
+    explicit_armor = [_with_icon(server_dir, item) for item in list(data.get("armor", []))]
+    explicit_offhand = [_with_icon(server_dir, item) for item in list(data.get("offhand", []))]
+    accessories = []
+    for section in list(data.get("accessories", [])):
+        if not isinstance(section, dict):
+            continue
+        accessories.append(
+            {
+                "name": str(section.get("name", "饰品栏")),
+                "items": [_with_icon(server_dir, item) for item in list(section.get("items", []))],
+            }
+        )
+    armor = explicit_armor or [item for item in inventory if item.get("section") == "armor"]
+    offhand = explicit_offhand or [item for item in inventory if item.get("section") == "offhand"]
+    hotbar = [item for item in inventory if item.get("section") == "hotbar"]
+    main = [item for item in inventory if item.get("section") == "main"]
+    return {
+        "inventory": inventory,
+        "hotbar": hotbar,
+        "main": main,
+        "armor": armor,
+        "offhand": offhand,
+        "enderChest": ender_chest,
+        "accessories": accessories,
+    }
+
+
+def _with_icon(server_dir: Path, item: object) -> dict[str, object]:
+    if not isinstance(item, dict):
+        return {}
+    item_id = str(item.get("id", ""))
+    return {
+        **item,
+        "iconDataUrl": resolve_item_icon_data_url(server_dir, item_id),
+    }
+
+
+def _online_inventory_from_log(log_path: Path, player: str) -> dict[str, object]:
+    payload = _empty_inventory_payload()
+    if not log_path.exists():
+        return payload
+    current_section = "inventory"
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        command = re.search(r">\s*data get entity ([A-Za-z0-9_]{1,16}) (Inventory|EnderItems|ArmorItems|HandItems)", line)
+        if command and command.group(1) == player:
+            current_section = {
+                "Inventory": "inventory",
+                "EnderItems": "enderChest",
+                "ArmorItems": "armor",
+                "HandItems": "hand",
+            }[command.group(2)]
+            continue
+        entity = re.search(rf": {re.escape(player)} has the following entity data: (\[.+\])", line)
+        if not entity:
+            continue
+        items = parse_snbt_inventory_list(entity.group(1), section=current_section)
+        if current_section == "enderChest":
+            payload["enderChest"] = [_force_section(item, "enderChest") for item in items]
+        elif current_section == "armor":
+            payload["armor"] = [_force_section(item, "armor") for item in items]
+        elif current_section == "hand":
+            payload["offhand"] = [_force_section(item, "offhand") for item in items[1:2]]
+        else:
+            payload["inventory"] = items
+    return payload
+
+
+def _force_section(item: dict[str, object], section: str) -> dict[str, object]:
+    return {**item, "section": section}
 
 
 def _normalize_game_mode(value: str) -> str:
