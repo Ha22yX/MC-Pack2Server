@@ -519,9 +519,13 @@ class PanelService:
     def server_players(self, target_name: str) -> dict[str, object]:
         server_dir = self._server_dir(target_name)
         log_path = server_dir / "logs" / "panel-server.log"
-        self._auto_probe_player_list(target_name)
-        players = _players_from_log(log_path)
-        self._auto_probe_online_players(target_name, players)
+        runtime_status = self.server_runtime_status(target_name)["runtimeStatus"]
+        if runtime_status == "running":
+            self._auto_probe_player_list(target_name)
+            players = _players_from_log(log_path)
+            self._auto_probe_online_players(target_name, players)
+        else:
+            players = {}
         online_players = list(players.values())
         online_names = {str(player.get("name", "")).casefold() for player in online_players}
         online_uuids = {str(player.get("uuid", "")).casefold() for player in online_players if player.get("uuid")}
@@ -533,6 +537,7 @@ class PanelService:
         compatibility = _inventory_compatibility(server_dir)
         return {
             "targetName": target_name,
+            "runtimeStatus": runtime_status,
             "players": online_players,
             "onlinePlayers": online_players,
             "offlinePlayers": offline_players,

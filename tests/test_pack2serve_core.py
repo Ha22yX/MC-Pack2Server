@@ -100,6 +100,18 @@ def _write_minimal_build_report(server_dir: Path, *, name: str, minecraft_versio
     )
 
 
+def _mark_server_running(service: PanelService, target_name: str, server_dir: Path) -> None:
+    process = Mock()
+    process.poll.return_value = None
+    process.pid = 12345
+    process.stdin = Mock()
+    service._running[target_name] = RunningServer(
+        process=process,
+        status="running",
+        log_path=server_dir / "logs/panel-server.log",
+    )
+
+
 class Pack2ServeCoreTests(unittest.TestCase):
     def test_inventory_view_supports_only_minecraft_1_13_and_newer(self) -> None:
         self.assertFalse(minecraft_supports_inventory_view("1.12.2"))
@@ -207,7 +219,9 @@ class Pack2ServeCoreTests(unittest.TestCase):
             )
             write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
 
-            players = PanelService(tmp_path / "workspace").server_players("sample-server")
+            service = PanelService(tmp_path / "workspace")
+            _mark_server_running(service, "sample-server", server_dir)
+            players = service.server_players("sample-server")
 
             self.assertEqual(players["inventoryCompatibility"]["supported"], True)
             self.assertEqual(players["onlinePlayers"][0]["name"], "Steve")
@@ -261,7 +275,9 @@ class Pack2ServeCoreTests(unittest.TestCase):
             write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
             write_playerdata_nbt(server_dir / "world/playerdata/22222222-3333-4444-5555-666666666666.dat")
 
-            players = PanelService(tmp_path / "workspace").server_players("sample-server")
+            service = PanelService(tmp_path / "workspace")
+            _mark_server_running(service, "sample-server", server_dir)
+            players = service.server_players("sample-server")
             by_uuid = {player["uuid"]: player for player in players["offlinePlayers"]}
 
             self.assertEqual(by_uuid["11111111-2222-3333-4444-555555555555"]["name"], "cachedName")
@@ -302,10 +318,44 @@ class Pack2ServeCoreTests(unittest.TestCase):
             write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
             write_playerdata_nbt(server_dir / "world/playerdata/22222222-3333-4444-5555-666666666666.dat")
 
-            players = PanelService(tmp_path / "workspace").server_players("sample-server")
+            service = PanelService(tmp_path / "workspace")
+            _mark_server_running(service, "sample-server", server_dir)
+            players = service.server_players("sample-server")
 
             self.assertEqual([player["name"] for player in players["onlinePlayers"]], ["kicofy"])
             self.assertEqual([player["name"] for player in players["offlinePlayers"]], ["Alex"])
+
+    def test_panel_service_does_not_show_log_players_as_online_when_stopped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world/playerdata").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+            (server_dir / "usercache.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "kicofy",
+                            "uuid": "11111111-2222-3333-4444-555555555555",
+                            "expiresOn": "2026-08-22 03:53:23 +0800",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (server_dir / "logs/panel-server.log").write_text(
+                "[Server thread/INFO]: kicofy joined the game\n",
+                encoding="utf-8",
+            )
+            write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
+
+            players = PanelService(tmp_path / "workspace").server_players("sample-server")
+
+            self.assertEqual(players["onlinePlayers"], [])
+            self.assertEqual([player["name"] for player in players["offlinePlayers"]], ["kicofy"])
 
     def test_panel_service_reads_offline_player_inventory_with_icons(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -2083,6 +2133,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
             _write_minimal_build_report(server_dir, name="Sample Server")
 
             service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            _mark_server_running(service, "sample-server", server_dir)
             players = service.server_players("sample-server")
 
             self.assertEqual([player["name"] for player in players["players"]], ["Bob"])
@@ -2103,6 +2154,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
             _write_minimal_build_report(server_dir, name="Sample Server")
 
             service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            _mark_server_running(service, "sample-server", server_dir)
             players = service.server_players("sample-server")
 
             self.assertEqual(players["players"], [])
@@ -2145,6 +2197,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
             _write_minimal_build_report(server_dir, name="Sample Server")
 
             service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            _mark_server_running(service, "sample-server", server_dir)
             players = service.server_players("sample-server")
             metrics = service.server_metrics("sample-server")
 
@@ -2236,6 +2289,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
             _write_minimal_build_report(server_dir, name="Sample Server")
 
             service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            _mark_server_running(service, "sample-server", server_dir)
             suggestions = service.command_suggestions("sample-server", "gam")
 
             self.assertIn("gamemode creative Alice", suggestions["suggestions"])
