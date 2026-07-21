@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from pack2serve.compatibility import audit_generated_server
+from pack2serve.installer import ensure_start_script_uses_nogui
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class ServerValidator:
         max_client_repair_attempts: int = 3,
     ) -> ValidationResult:
         root = Path(server_dir)
+        ensure_start_script_uses_nogui(root)
         cmd = command or _default_command(root)
         result = self._validate_with_client_dist_repairs(
             root,
@@ -113,6 +115,7 @@ class ServerValidator:
             text=True,
             encoding="utf-8",
             errors="replace",
+            **_hidden_subprocess_kwargs(),
         )
         status: str | None = None
         try:
@@ -186,6 +189,22 @@ def _default_command(root: Path) -> list[str]:
     if run_sh.exists():
         return ["sh", str(run_sh.resolve())]
     return ["java", "-jar", "server.jar", "nogui"]
+
+
+def _hidden_subprocess_kwargs() -> dict[str, object]:
+    if os.name != "nt":
+        return {}
+    kwargs: dict[str, object] = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_class = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_class is not None:
+        startupinfo = startupinfo_class()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
 
 
 def isolate_invalid_dist_client_mods(server_dir: str | Path, output: str = "") -> list[str]:

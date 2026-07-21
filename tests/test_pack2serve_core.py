@@ -1,5 +1,6 @@
 import json
 import hashlib
+import os
 import tempfile
 import time
 import unittest
@@ -22,7 +23,7 @@ from pack2serve.java import (
     required_java_major,
 )
 from pack2serve.loader import LoaderInstallPlan, create_loader_install_plan
-from pack2serve.installer import LoaderInstaller
+from pack2serve.installer import LoaderInstaller, ensure_start_script_uses_nogui
 from pack2serve.panel import PanelService, ProjectJob
 from pack2serve.parser import ModpackFormat, parse_modpack
 from pack2serve.validator import ServerValidator
@@ -399,7 +400,9 @@ class Pack2ServeCoreTests(unittest.TestCase):
             result = LoaderInstaller().install(server_dir, plan, execute_installers=True)
 
             self.assertEqual(result.status, "installed")
-            self.assertIn("run.bat", (server_dir / "start.ps1").read_text(encoding="utf-8"))
+            start = (server_dir / "start.ps1").read_text(encoding="utf-8")
+            self.assertIn("run.bat", start)
+            self.assertIn("run.bat') nogui", start)
 
     def test_loader_installer_uses_managed_java_runtime_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -435,7 +438,25 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(result.status, "installed")
             self.assertIn("pack2serve", result.command[0].replace("\\", "/"))
             self.assertIn("runtime/java/bin/java.cmd", result.command[0].replace("\\", "/"))
-            self.assertIn("run.bat", (server_dir / "start.ps1").read_text(encoding="utf-8"))
+            start = (server_dir / "start.ps1").read_text(encoding="utf-8")
+            self.assertIn("run.bat", start)
+            self.assertIn("run.bat') nogui", start)
+
+    def test_loader_installer_repairs_existing_run_bat_start_script_to_nogui(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            server_dir = Path(temp) / "server"
+            server_dir.mkdir()
+            start = server_dir / "start.ps1"
+            start.write_text(
+                "$ErrorActionPreference = 'Stop'\n"
+                "& (Join-Path $PSScriptRoot 'run.bat')\n",
+                encoding="utf-8",
+            )
+
+            changed = ensure_start_script_uses_nogui(server_dir)
+
+            self.assertTrue(changed)
+            self.assertIn("run.bat') nogui", start.read_text(encoding="utf-8"))
 
     def test_loader_installer_rewrites_start_script_to_legacy_forge_jar_when_no_run_bat_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -939,6 +960,14 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             stopped = service.stop_server("sample-server")
             self.assertEqual(stopped["runtimeStatus"], "stopped")
+
+    def test_panel_uses_hidden_subprocess_flags_on_windows(self) -> None:
+        kwargs = panel_module._hidden_subprocess_kwargs()
+
+        if os.name == "nt":
+            self.assertTrue("creationflags" in kwargs or "startupinfo" in kwargs)
+        else:
+            self.assertEqual(kwargs, {})
 
     def test_panel_service_rejects_start_when_world_session_lock_remains_active(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

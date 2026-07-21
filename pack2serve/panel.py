@@ -18,7 +18,7 @@ from typing import TextIO
 from pack2serve.builder import ServerBuilder
 from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, default_curseforge_providers
 from pack2serve.eula import accept_eula as accept_server_eula
-from pack2serve.installer import LoaderInstaller, load_loader_plan
+from pack2serve.installer import LoaderInstaller, ensure_start_script_uses_nogui, load_loader_plan
 from pack2serve.java import JavaInstaller, load_java_runtime_install_plan
 from pack2serve.validator import ServerValidator
 
@@ -309,6 +309,9 @@ class PanelService:
                 with log_path.open("a", encoding="utf-8", errors="replace") as log:
                     _write_log_line(log, f"\n--- Pack2Serve panel preflight {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
                     _write_log_line(log, f"[Pack2Serve] Terminated stale process(es) before startup: {', '.join(str(pid) for pid in terminated)}\n")
+            if ensure_start_script_uses_nogui(server_dir):
+                with log_path.open("a", encoding="utf-8", errors="replace") as log:
+                    _write_log_line(log, "[Pack2Serve] Updated start.ps1 to launch Minecraft with nogui.\n")
             command = _default_start_command(server_dir)
             process = subprocess.Popen(
                 command,
@@ -319,6 +322,7 @@ class PanelService:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                **_hidden_subprocess_kwargs(),
             )
             running = RunningServer(process=process, status="starting", log_path=log_path)
             self._running[target_name] = running
@@ -1021,6 +1025,22 @@ def _default_start_command(server_dir: Path) -> list[str]:
     if start.exists():
         return ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(start.resolve())]
     return ["java", "-jar", "server.jar", "nogui"]
+
+
+def _hidden_subprocess_kwargs() -> dict[str, object]:
+    if os.name != "nt":
+        return {}
+    kwargs: dict[str, object] = {}
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if creationflags:
+        kwargs["creationflags"] = creationflags
+    startupinfo_class = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo_class is not None:
+        startupinfo = startupinfo_class()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+        startupinfo.wShowWindow = 0
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
 
 
 def _read_server_port(server_dir: Path) -> int:

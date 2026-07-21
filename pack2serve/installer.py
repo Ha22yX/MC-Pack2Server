@@ -122,7 +122,7 @@ class LoaderInstaller:
             (root / "start.ps1").write_text(
                 "$ErrorActionPreference = 'Stop'\n"
                 f"{_powershell_java_prelude(include_path=True)}"
-                "& (Join-Path $PSScriptRoot 'run.bat')\n",
+                "& (Join-Path $PSScriptRoot 'run.bat') nogui\n",
                 encoding="utf-8",
             )
             return
@@ -161,6 +161,29 @@ def load_loader_plan(path: str | Path) -> LoaderInstallPlan:
         server_jar=data.get("server_jar"),
         notes=list(data.get("notes", [])),
     )
+
+
+def ensure_start_script_uses_nogui(server_dir: str | Path) -> bool:
+    start = Path(server_dir) / "start.ps1"
+    if not start.exists():
+        return False
+    try:
+        content = start.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    replacements = {
+        "& (Join-Path $PSScriptRoot 'run.bat')\n": "& (Join-Path $PSScriptRoot 'run.bat') nogui\n",
+        '& (Join-Path $PSScriptRoot "run.bat")\n': '& (Join-Path $PSScriptRoot "run.bat") nogui\n',
+        "& (Join-Path $PSScriptRoot 'run.bat')\r\n": "& (Join-Path $PSScriptRoot 'run.bat') nogui\r\n",
+        '& (Join-Path $PSScriptRoot "run.bat")\r\n': '& (Join-Path $PSScriptRoot "run.bat") nogui\r\n',
+    }
+    updated = content
+    for old, new in replacements.items():
+        updated = updated.replace(old, new)
+    if updated == content:
+        return False
+    start.write_text(updated, encoding="utf-8")
+    return True
 
 
 def _download(url: str, destination: Path) -> None:
