@@ -159,14 +159,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.loader_url_override:
             _override_loader_url(plan_path, args.loader_url_override)
         plan = load_loader_plan(plan_path)
+        java_result = None
+        if args.install_java:
+            java_result = _install_java(args.target, args.java_url_override)
         install_result = LoaderInstaller().install(
             args.target,
             plan,
             execute_installers=args.execute_installers,
         )
-        java_result = None
-        if args.install_java:
-            java_result = _install_java(args.target, args.java_url_override)
         validation_result = None
         if args.validate:
             validation_result = ServerValidator().validate(
@@ -220,14 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare-existing":
         plan_path = args.server_dir / "pack2serve" / "loader-install-plan.json"
         plan = load_loader_plan(plan_path)
+        java_result = None
+        if args.install_java:
+            java_result = _install_java(args.server_dir, args.java_url_override)
         install_result = LoaderInstaller().install(
             args.server_dir,
             plan,
             execute_installers=args.execute_installers,
         )
-        java_result = None
-        if args.install_java:
-            java_result = _install_java(args.server_dir, args.java_url_override)
         validation_result = None
         if args.validate:
             validation_result = ServerValidator().validate(

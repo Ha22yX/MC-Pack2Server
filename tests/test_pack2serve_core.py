@@ -362,6 +362,42 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(result.status, "installed")
             self.assertIn("run.bat", (server_dir / "start.ps1").read_text(encoding="utf-8"))
 
+    def test_loader_installer_uses_managed_java_runtime_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "installer.jar"
+            source.write_bytes(b"installer")
+            server_dir = tmp_path / "server"
+            java_dir = server_dir / "pack2serve/runtime/java/bin"
+            java_dir.mkdir(parents=True)
+            java_cmd = java_dir / "java.cmd"
+            java_cmd.write_text(
+                "@echo off\n"
+                "echo managed java\n"
+                "echo java @user_jvm_args.txt @libraries/example/win_args.txt nogui> run.bat\n",
+                encoding="utf-8",
+            )
+            plan = LoaderInstallPlan(
+                loader="forge",
+                loader_version="47.4.20",
+                minecraft_version="1.20.1",
+                kind="installer-jar",
+                download_url=source.as_uri(),
+                artifact_name="forge-installer.jar",
+                artifact_path="pack2serve/loaders/forge-installer.jar",
+                install_command=["java", "-jar", "pack2serve/loaders/forge-installer.jar", "--installServer"],
+                launch_command=["powershell", "-ExecutionPolicy", "Bypass", "-File", "start.ps1"],
+                server_jar=None,
+                notes=[],
+            )
+
+            result = LoaderInstaller().install(server_dir, plan, execute_installers=True)
+
+            self.assertEqual(result.status, "installed")
+            self.assertIn("pack2serve", result.command[0].replace("\\", "/"))
+            self.assertIn("runtime/java/bin/java.cmd", result.command[0].replace("\\", "/"))
+            self.assertIn("run.bat", (server_dir / "start.ps1").read_text(encoding="utf-8"))
+
     def test_loader_installer_rewrites_start_script_to_legacy_forge_jar_when_no_run_bat_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -521,6 +557,82 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertEqual((target / "mods/remote.jar").read_bytes(), b"remote-content")
             self.assertEqual(len(report.manual_actions), 0)
+
+    def test_server_builder_isolates_modrinth_server_unsupported_remote_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "client.jar"
+            source.write_bytes(b"client-only")
+            sha1 = hashlib.sha1(source.read_bytes()).hexdigest()
+            pack = tmp_path / "sample.mrpack"
+            write_zip(
+                pack,
+                {
+                    "modrinth.index.json": json.dumps(
+                        {
+                            "formatVersion": 1,
+                            "game": "minecraft",
+                            "name": "Client Env Build",
+                            "versionId": "1.0.0",
+                            "dependencies": {"minecraft": "1.20.1", "forge": "47.4.20"},
+                            "files": [
+                                {
+                                    "path": "mods/client.jar",
+                                    "downloads": [source.as_uri()],
+                                    "hashes": {"sha1": sha1},
+                                    "fileSize": len(b"client-only"),
+                                    "env": {"client": "required", "server": "unsupported"},
+                                }
+                            ],
+                        }
+                    ),
+                },
+            )
+            target = tmp_path / "server"
+
+            report = ServerBuilder(cache_dir=tmp_path / "cache", download_remote=True).build(pack, target)
+
+            self.assertFalse((target / "mods/client.jar").exists())
+            self.assertEqual((target / "_client-overrides/mods/client.jar").read_bytes(), b"client-only")
+            self.assertEqual(report.copied_overrides[-1].classification, "client-remote-isolated")
+            self.assertEqual(len(report.manual_actions), 0)
+
+    def test_server_builder_isolates_known_client_only_modrinth_remote_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            source = tmp_path / "【无缝音乐】moremusic-0.1.4+1.20.1.jar"
+            source.write_bytes(b"moremusic")
+            sha1 = hashlib.sha1(source.read_bytes()).hexdigest()
+            pack = tmp_path / "sample.mrpack"
+            write_zip(
+                pack,
+                {
+                    "modrinth.index.json": json.dumps(
+                        {
+                            "formatVersion": 1,
+                            "game": "minecraft",
+                            "name": "Known Client Build",
+                            "versionId": "1.0.0",
+                            "dependencies": {"minecraft": "1.20.1", "forge": "47.4.20"},
+                            "files": [
+                                {
+                                    "path": "mods/【无缝音乐】moremusic-0.1.4+1.20.1.jar",
+                                    "downloads": [source.as_uri()],
+                                    "hashes": {"sha1": sha1},
+                                    "fileSize": len(b"moremusic"),
+                                }
+                            ],
+                        }
+                    ),
+                },
+            )
+            target = tmp_path / "server"
+
+            report = ServerBuilder(cache_dir=tmp_path / "cache", download_remote=True).build(pack, target)
+
+            self.assertFalse((target / "mods/【无缝音乐】moremusic-0.1.4+1.20.1.jar").exists())
+            self.assertTrue((target / "_client-overrides/mods/【无缝音乐】moremusic-0.1.4+1.20.1.jar").exists())
+            self.assertEqual(report.copied_overrides[-1].classification, "client-remote-isolated")
 
     def test_panel_service_imports_pack_and_lists_generated_server(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1432,6 +1544,27 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(result.status, "failed")
             self.assertTrue(any("port" in hint.lower() for hint in result.hints))
 
+    def test_server_validator_does_not_keep_port_hint_after_successful_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_port_then_started.py"
+            fake.write_text(
+                "print('Address already in use appeared in an old diagnostic')\n"
+                "print('Done (1.0s)! For help, type \"help\"')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "started")
+            self.assertFalse(any("port" in hint.lower() for hint in result.hints))
+
     def test_server_validator_does_not_fail_on_optional_mixin_class_probe(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1441,6 +1574,27 @@ class Pack2ServeCoreTests(unittest.TestCase):
             fake.write_text(
                 "print('Error loading class: net/coderbot/iris/Iris "
                 "(java.lang.ClassNotFoundException: net/coderbot/iris/Iris)')\n"
+                "print('Done (1.0s)! For help, type \"help\"')\n",
+                encoding="utf-8",
+            )
+
+            result = ServerValidator().validate(
+                server_dir,
+                command=["python", str(fake)],
+                timeout_seconds=10,
+            )
+
+            self.assertEqual(result.status, "started")
+
+    def test_server_validator_does_not_fail_on_invalid_dist_probe_before_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            fake = tmp_path / "fake_invalid_dist_probe.py"
+            fake.write_text(
+                "print('Attempted to load class net/minecraft/client/MouseHandler for invalid dist DEDICATED_SERVER')\n"
+                "print('java.lang.RuntimeException: Attempted to load class net/minecraft/client/MouseHandler')\n"
                 "print('Done (1.0s)! For help, type \"help\"')\n",
                 encoding="utf-8",
             )

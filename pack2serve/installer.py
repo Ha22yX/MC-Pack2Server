@@ -50,8 +50,9 @@ class LoaderInstaller:
                 stderr="",
             )
         elif execute_installers:
+            command = _command_with_managed_java(root, plan.install_command)
             proc = subprocess.run(
-                plan.install_command,
+                command,
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -61,7 +62,7 @@ class LoaderInstaller:
                 status="installed" if proc.returncode == 0 else "failed",
                 artifact_path=str(artifact_path.relative_to(root)).replace("\\", "/"),
                 executed=True,
-                command=plan.install_command,
+                command=command,
                 return_code=proc.returncode,
                 stdout=proc.stdout,
                 stderr=proc.stderr,
@@ -86,7 +87,7 @@ class LoaderInstaller:
         jar = plan.server_jar or plan.artifact_path
         (root / "start.ps1").write_text(
             "$ErrorActionPreference = 'Stop'\n"
-            "$java = 'java'\n"
+            f"{_powershell_java_prelude()}"
             "$args = @('-Xms1G', '-Xmx4G')\n"
             f"& $java @args -jar '{jar}' nogui\n",
             encoding="utf-8",
@@ -97,6 +98,7 @@ class LoaderInstaller:
         if run_bat.exists():
             (root / "start.ps1").write_text(
                 "$ErrorActionPreference = 'Stop'\n"
+                f"{_powershell_java_prelude(include_path=True)}"
                 "& (Join-Path $PSScriptRoot 'run.bat')\n",
                 encoding="utf-8",
             )
@@ -106,7 +108,7 @@ class LoaderInstaller:
         if legacy_jar:
             (root / "start.ps1").write_text(
                 "$ErrorActionPreference = 'Stop'\n"
-                "$java = 'java'\n"
+                f"{_powershell_java_prelude()}"
                 "$args = @('-Xms1G', '-Xmx4G')\n"
                 f"& $java @args -jar '{legacy_jar.name}' nogui\n",
                 encoding="utf-8",
@@ -148,6 +150,41 @@ def _download(url: str, destination: Path) -> None:
         temp.unlink(missing_ok=True)
         raise RuntimeError(f"Failed to download loader artifact {url}: {exc}") from exc
     temp.replace(destination)
+
+
+def _command_with_managed_java(root: Path, command: list[str]) -> list[str]:
+    if not command or command[0].lower() != "java":
+        return command
+    local_java = _find_managed_java(root)
+    if local_java is None:
+        return command
+    return [str(local_java), *command[1:]]
+
+
+def _find_managed_java(root: Path) -> Path | None:
+    for relative in (
+        "pack2serve/runtime/java/bin/java.exe",
+        "pack2serve/runtime/java/bin/java.cmd",
+        "pack2serve/runtime/java/bin/java",
+    ):
+        candidate = root / relative
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _powershell_java_prelude(*, include_path: bool = False) -> str:
+    prelude = (
+        "$java = 'java'\n"
+        "$localJava = Join-Path $PSScriptRoot 'pack2serve\\runtime\\java\\bin\\java.exe'\n"
+        "if (Test-Path $localJava) { $java = $localJava }\n"
+    )
+    if include_path:
+        prelude += (
+            "$localJavaBin = Join-Path $PSScriptRoot 'pack2serve\\runtime\\java\\bin'\n"
+            "if (Test-Path $localJavaBin) { $env:PATH = $localJavaBin + ';' + $env:PATH }\n"
+        )
+    return prelude
 
 
 def _find_legacy_forge_jar(root: Path) -> Path | None:

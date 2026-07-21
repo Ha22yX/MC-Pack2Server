@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from dataclasses import asdict, dataclass
@@ -74,7 +75,7 @@ class ServerValidator:
                 if remaining_stdout:
                     output_parts.append(remaining_stdout)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                _kill_process_tree(proc)
                 try:
                     remaining_stdout, _ = proc.communicate(timeout=5)
                     if remaining_stdout:
@@ -132,18 +133,13 @@ def _classify_output(output: str, return_code: int | None, timed_out: bool) -> s
     if (
         "failed to start" in lowered
         or "failed to bind to port" in lowered
-        or "address already in use" in lowered
         or "mod loading error" in lowered
         or "exception in thread" in lowered
-        or "runtimeexception" in lowered
         or "invocationtargetexception" in lowered
-        or "classcastexception" in lowered
         or "loadingfailedexception" in lowered
         or "mixintransformererror" in lowered
         or "unsupported class file major version" in lowered
         or "missingmodsexception" in lowered
-        or "noclassdeffounderror" in lowered
-        or "caused by: java.lang.classnotfoundexception" in lowered
     ):
         return "failed"
     if "done (" in lowered and "for help" in lowered:
@@ -177,9 +173,9 @@ def _hints(output: str, return_code: int | None, timed_out: bool) -> list[str]:
         hints.append("The Minecraft EULA may need to be accepted before startup can continue.")
     if "accessdeniedexception" in lowered or "access is denied" in lowered:
         hints.append("The server process hit a filesystem permission or file-lock issue.")
-    if "failed to bind to port" in lowered or "address already in use" in lowered:
+    if not started and ("failed to bind to port" in lowered or "address already in use" in lowered):
         hints.append("The configured server port is already in use.")
-    if return_code and return_code != 0 and not hints:
+    if not started and return_code and return_code != 0 and not hints:
         hints.append("The server process exited with a non-zero code. Check validation log.")
     return hints
 
@@ -192,4 +188,18 @@ def _stop_process(proc: subprocess.Popen[str], status: str | None) -> None:
             return
         except OSError:
             pass
+    _kill_process_tree(proc)
+
+
+def _kill_process_tree(proc: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if proc.poll() is None:
+            proc.kill()
+        return
     proc.terminate()

@@ -56,6 +56,31 @@ CLIENT_FILES = {
 }
 
 
+KNOWN_CLIENT_ONLY_MOD_IDS = {
+    "combatsense",
+    "continuity",
+    "entity-model-features",
+    "entity-texture-features",
+    "firstperson",
+    "hide-experimental-warning",
+    "iris",
+    "itemphysiclite",
+    "jecharacters",
+    "just-zoom",
+    "legacyskins",
+    "mcwifipnp",
+    "modmenu",
+    "moremusic",
+    "not-enough-animations",
+    "oculus",
+    "rubidium",
+    "skinlayers3d",
+    "smoothswapping",
+    "sodium",
+    "sodiumextras",
+}
+
+
 class ServerBuilder:
     def __init__(
         self,
@@ -86,10 +111,15 @@ class ServerBuilder:
             copied = self._copy_overrides(archive, pack.override_root, target)
 
         if pack.format == ModpackFormat.CURSEFORGE:
-            curseforge_actions, curseforge_resolution = self._resolve_curseforge_files(pack.remote_files, target)
+            curseforge_actions, curseforge_resolution, curseforge_copied = self._resolve_curseforge_files(
+                pack.remote_files, target
+            )
             manual_actions.extend(curseforge_actions)
+            copied.extend(curseforge_copied)
         else:
-            manual_actions.extend(self._resolve_remote_files(pack.format, pack.remote_files, target))
+            remote_actions, remote_copied = self._resolve_remote_files(pack.format, pack.remote_files, target)
+            manual_actions.extend(remote_actions)
+            copied.extend(remote_copied)
 
         report = BuildReport(
             pack=pack,
@@ -105,16 +135,27 @@ class ServerBuilder:
 
     def _resolve_remote_files(
         self, pack_format: ModpackFormat, remote_files: list[RemoteFile], target: Path
-    ) -> list[ManualAction]:
+    ) -> tuple[list[ManualAction], list[CopiedOverride]]:
         if not self.download_remote:
-            return []
+            return [], []
 
         provider = ModrinthDirectProvider(ArtifactCache(self.cache_dir))
         actions: list[ManualAction] = []
+        copied: list[CopiedOverride] = []
         for remote in remote_files:
             try:
                 artifact = provider.resolve_and_cache(remote)
-                copy_cached_artifact(artifact, target / Path(remote.target_path))
+                destination, classification = self._remote_destination(remote, target)
+                copy_cached_artifact(artifact, destination)
+                if classification == "client-remote-isolated":
+                    copied.append(
+                        CopiedOverride(
+                            source=f"{remote.provider}:{remote.target_path}",
+                            destination=str(destination.relative_to(target)).replace("\\", "/"),
+                            classification=classification,
+                            size=artifact.path.stat().st_size,
+                        )
+                    )
             except DownloadError as exc:
                 actions.append(
                     ManualAction(
@@ -123,12 +164,13 @@ class ServerBuilder:
                         details={"targetPath": remote.target_path, "provider": remote.provider},
                     )
                 )
-        return actions
+        return actions, copied
 
     def _resolve_curseforge_files(
         self, remote_files: list[RemoteFile], target: Path
-    ) -> tuple[list[ManualAction], CurseForgeResolutionSummary]:
+    ) -> tuple[list[ManualAction], CurseForgeResolutionSummary, list[CopiedOverride]]:
         actions: list[ManualAction] = []
+        copied: list[CopiedOverride] = []
         if not self.download_remote:
             providers: list[CurseForgeTemplateMirrorProvider] = []
         else:
@@ -139,7 +181,17 @@ class ServerBuilder:
         for remote in remote_files:
             try:
                 artifact = resolver.resolve_and_cache(remote)
-                copy_cached_artifact(artifact, target / "mods" / artifact.path.name)
+                destination, classification = self._curseforge_destination(remote, artifact.path.name, target)
+                copy_cached_artifact(artifact, destination)
+                if classification == "client-remote-isolated":
+                    copied.append(
+                        CopiedOverride(
+                            source=f"{remote.provider}:{remote.project_id}/{remote.file_id}",
+                            destination=str(destination.relative_to(target)).replace("\\", "/"),
+                            classification=classification,
+                            size=artifact.path.stat().st_size,
+                        )
+                    )
                 resolved_count += 1
                 provider_counts[artifact.provider] = provider_counts.get(artifact.provider, 0) + 1
             except CurseForgeResolutionError as exc:
@@ -163,7 +215,24 @@ class ServerBuilder:
             resolved=resolved_count,
             unresolved=len(actions),
             providers=provider_counts,
-        )
+        ), copied
+
+    def _remote_destination(self, remote: RemoteFile, target: Path) -> tuple[Path, str]:
+        relative = Path(remote.target_path)
+        if self._should_isolate_remote_mod(remote):
+            return target / "_client-overrides" / relative, "client-remote-isolated"
+        return target / relative, "server-remote-copied"
+
+    def _curseforge_destination(self, remote: RemoteFile, filename: str, target: Path) -> tuple[Path, str]:
+        if self._should_isolate_remote_mod(remote, filename):
+            return target / "_client-overrides" / "mods" / filename, "client-remote-isolated"
+        return target / "mods" / filename, "server-remote-copied"
+
+    def _should_isolate_remote_mod(self, remote: RemoteFile, filename: str | None = None) -> bool:
+        if remote.env.get("server", "").lower() == "unsupported":
+            return True
+        candidates = [remote.target_path, filename or "", remote.slug or "", remote.display_name or ""]
+        return any(_matches_client_only_mod(candidate) for candidate in candidates)
 
     def _copy_overrides(
         self, archive: zipfile.ZipFile, override_root: str, target: Path
@@ -264,6 +333,27 @@ class ServerBuilder:
 
 def _remote_to_dict(remote: object) -> dict[str, object]:
     return dict(remote.__dict__)
+
+
+def _matches_client_only_mod(value: str) -> bool:
+    normalized = value.lower().replace("\\", "/")
+    filename = normalized.rsplit("/", 1)[-1]
+    compact = (
+        filename.replace("_", "-")
+        .replace(" ", "-")
+        .replace("[", "-")
+        .replace("]", "-")
+        .replace("：", "-")
+        .replace("／", "-")
+    )
+    return any(
+        compact == mod_id
+        or compact.startswith(f"{mod_id}-")
+        or compact.endswith(f"-{mod_id}")
+        or f"-{mod_id}-" in compact
+        or mod_id in compact
+        for mod_id in KNOWN_CLIENT_ONLY_MOD_IDS
+    )
 
 
 def _loader_plan(report: BuildReport) -> dict[str, object]:
