@@ -152,6 +152,46 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertIsNotNone(icon)
             self.assertTrue(str(icon).startswith("data:image/png;base64,"))
 
+    def test_resolve_item_icon_data_url_falls_back_to_named_model_texture(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            server_dir = Path(temp) / "server"
+            mods_dir = server_dir / "mods"
+            mods_dir.mkdir(parents=True)
+            write_zip(
+                mods_dir / "example.jar",
+                {
+                    "assets/example/models/item/hammer.json": json.dumps({"parent": "builtin/entity"}),
+                    "assets/example/textures/item/models/hammer.png": b"\x89PNG\r\n\x1a\nhammer",
+                },
+            )
+
+            icon = resolve_item_icon_data_url(server_dir, "example:hammer")
+
+            self.assertIsNotNone(icon)
+            self.assertTrue(str(icon).startswith("data:image/png;base64,"))
+
+    def test_resolve_item_icon_data_url_reads_configured_minecraft_client_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            server_dir.mkdir()
+            client_jar = tmp_path / "client.jar"
+            write_zip(
+                client_jar,
+                {
+                    "assets/minecraft/models/item/flint_and_steel.json": json.dumps(
+                        {"parent": "item/generated", "textures": {"layer0": "minecraft:item/flint_and_steel"}}
+                    ),
+                    "assets/minecraft/textures/item/flint_and_steel.png": b"\x89PNG\r\n\x1a\nflint",
+                },
+            )
+
+            with patch.dict(os.environ, {"PACK2SERVE_MINECRAFT_CLIENT_JAR": str(client_jar)}):
+                icon = resolve_item_icon_data_url(server_dir, "minecraft:flint_and_steel")
+
+            self.assertIsNotNone(icon)
+            self.assertTrue(str(icon).startswith("data:image/png;base64,"))
+
     def test_panel_service_lists_online_and_offline_players(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -323,6 +363,58 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(inventory["hotbar"][0]["id"], "minecraft:stone")
             self.assertEqual(inventory["armor"], [])
             self.assertEqual(inventory["offhand"], [])
+
+    def test_panel_service_ignores_position_probe_outputs_while_reading_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+            (server_dir / "logs/panel-server.log").write_text(
+                "> data get entity kicofy Inventory\n"
+                "> data get entity kicofy EnderItems\n"
+                "[Server thread/INFO]: kicofy has the following entity data: [12.0d, 70.0d, -5.0d]\n"
+                '[Server thread/INFO]: kicofy has the following entity data: [{Slot:0b,id:"minecraft:stone",count:64}]\n'
+                "[Server thread/INFO]: kicofy has the following entity data: []\n"
+                "> data get entity kicofy ArmorItems\n"
+                "[Server thread/INFO]: Found no elements matching ArmorItems\n"
+                "> data get entity kicofy HandItems\n"
+                "[Server thread/INFO]: Found no elements matching HandItems\n",
+                encoding="utf-8",
+            )
+
+            inventory = PanelService(tmp_path / "workspace").player_inventory("sample-server", "kicofy", source="online")
+
+            self.assertEqual(inventory["status"], "ready")
+            self.assertEqual(inventory["hotbar"][0]["id"], "minecraft:stone")
+            self.assertEqual(inventory["enderChest"], [])
+
+    def test_panel_service_throttles_repeated_online_inventory_probes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+            (server_dir / "logs/panel-server.log").write_text("", encoding="utf-8")
+            process = Mock()
+            process.poll.return_value = None
+            process.stdin = Mock()
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            service._running["sample-server"] = RunningServer(
+                process=process,
+                status="running",
+                log_path=server_dir / "logs/panel-server.log",
+            )
+
+            with patch.object(service, "send_console_command") as send:
+                service.player_inventory("sample-server", "kicofy", source="online")
+                service.player_inventory("sample-server", "kicofy", source="online")
+
+            self.assertEqual(send.call_count, 4)
 
     def test_panel_service_rejects_inventory_view_for_old_minecraft_versions(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

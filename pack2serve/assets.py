@@ -2,53 +2,220 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import zipfile
 from pathlib import Path
 
 
+_ICON_CACHE: dict[tuple[str, str, str, str], str | None] = {}
+
+
 def resolve_item_icon_data_url(server_dir: Path, item_id: str) -> str | None:
+    cache_key = (
+        str(server_dir.resolve()),
+        item_id,
+        os.environ.get("PACK2SERVE_MINECRAFT_CLIENT_JAR", ""),
+        os.environ.get("PACK2SERVE_MINECRAFT_HOME", ""),
+    )
+    if cache_key in _ICON_CACHE:
+        return _ICON_CACHE[cache_key]
     namespace, item_name = _split_item_id(item_id)
-    for jar_path in sorted((server_dir / "mods").glob("*.jar")):
-        icon = _resolve_item_icon_from_jar(jar_path, namespace, item_name)
+    for archive_path in _resource_archives(server_dir):
+        icon = _resolve_item_icon_from_archive(archive_path, namespace, item_name)
         if icon:
+            _ICON_CACHE[cache_key] = icon
             return icon
+    for root in _resource_directories(server_dir):
+        icon = _resolve_item_icon_from_directory(root, namespace, item_name)
+        if icon:
+            _ICON_CACHE[cache_key] = icon
+            return icon
+    if namespace == "minecraft":
+        for archive_path in _minecraft_client_archives(server_dir):
+            icon = _resolve_item_icon_from_archive(archive_path, namespace, item_name)
+            if icon:
+                _ICON_CACHE[cache_key] = icon
+                return icon
+    _ICON_CACHE[cache_key] = None
     return None
 
 
-def _resolve_item_icon_from_jar(jar_path: Path, namespace: str, item_name: str) -> str | None:
+def _resource_archives(server_dir: Path) -> list[Path]:
+    archives: list[Path] = []
+    for pattern in ("mods/*.jar", "resourcepacks/*.zip", "resourcepacks/*.jar"):
+        archives.extend(server_dir.glob(pattern))
+    return sorted(path for path in archives if path.is_file())
+
+
+def _resource_directories(server_dir: Path) -> list[Path]:
+    candidates = [
+        server_dir,
+        server_dir / "kubejs",
+        server_dir / "_client-overrides",
+        server_dir / "_unknown-overrides",
+    ]
+    candidates.extend(path for path in (server_dir / "resourcepacks").glob("*") if path.is_dir())
+    return [path for path in candidates if path.exists()]
+
+
+def _minecraft_client_archives(server_dir: Path) -> list[Path]:
+    archives: list[Path] = []
+    configured = os.environ.get("PACK2SERVE_MINECRAFT_CLIENT_JAR", "")
+    for raw in configured.split(os.pathsep):
+        if raw.strip():
+            path = Path(raw.strip())
+            if path.is_file():
+                archives.append(path)
+    version = _minecraft_version(server_dir)
+    for home in _minecraft_homes():
+        if version:
+            archives.extend(home.glob(f"libraries/net/minecraft/client/{version}-*/client-{version}-*-extra.jar"))
+            archives.extend(home.glob(f"libraries/net/minecraft/client/{version}-*/client-{version}-*.jar"))
+        archives.extend(home.glob("versions/*/*.jar"))
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in archives:
+        resolved = path.resolve()
+        if resolved in seen or not path.is_file():
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
+
+
+def _minecraft_homes() -> list[Path]:
+    candidates: list[Path] = []
+    configured = os.environ.get("PACK2SERVE_MINECRAFT_HOME", "")
+    if configured:
+        candidates.append(Path(configured))
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        candidates.append(Path(appdata) / ".minecraft")
+    candidates.extend(
+        [
+            Path.home() / "AppData/Roaming/.minecraft",
+            Path("D:/Games/PCL/.minecraft"),
+        ]
+    )
+    return [path for path in candidates if path.exists()]
+
+
+def _minecraft_version(server_dir: Path) -> str:
+    report_path = server_dir / "pack2serve" / "build-report.json"
     try:
-        with zipfile.ZipFile(jar_path) as jar:
-            names = set(jar.namelist())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    pack = report.get("pack") if isinstance(report, dict) else None
+    if isinstance(pack, dict):
+        return str(pack.get("minecraft_version") or "")
+    return ""
+
+
+def _resolve_item_icon_from_archive(archive_path: Path, namespace: str, item_name: str) -> str | None:
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
             model_path = f"assets/{namespace}/models/item/{item_name}.json"
             if model_path in names:
-                texture = _texture_from_model(jar, model_path)
-                if texture:
+                for texture in _textures_from_model(archive, model_path):
                     texture_path = _texture_reference_to_path(texture)
                     if texture_path in names:
-                        return _png_data_url(jar.read(texture_path))
-            for direct in (
-                f"assets/{namespace}/textures/item/{item_name}.png",
-                f"assets/{namespace}/textures/block/{item_name}.png",
-            ):
+                        return _png_data_url(archive.read(texture_path))
+            for direct in _candidate_texture_paths(namespace, item_name):
                 if direct in names:
-                    return _png_data_url(jar.read(direct))
+                    return _png_data_url(archive.read(direct))
+            suffix = f"/{item_name}.png"
+            for name in sorted(names):
+                if name.startswith(f"assets/{namespace}/") and "/textures/" in name and name.endswith(suffix):
+                    return _png_data_url(archive.read(name))
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError, KeyError):
         return None
     return None
 
 
-def _texture_from_model(jar: zipfile.ZipFile, model_path: str) -> str | None:
-    model = json.loads(jar.read(model_path).decode("utf-8", errors="replace"))
+def _resolve_item_icon_from_directory(root: Path, namespace: str, item_name: str) -> str | None:
+    model_path = root / "assets" / namespace / "models" / "item" / f"{item_name}.json"
+    if model_path.exists():
+        for texture in _textures_from_directory_model(root, model_path):
+            texture_path = root / _texture_reference_to_path(texture)
+            if texture_path.exists():
+                return _png_data_url(texture_path.read_bytes())
+    for relative in _candidate_texture_paths(namespace, item_name):
+        path = root / relative
+        if path.exists():
+            return _png_data_url(path.read_bytes())
+    texture_root = root / "assets" / namespace
+    if texture_root.exists():
+        for path in sorted(texture_root.rglob(f"{item_name}.png")):
+            if "textures" in path.parts:
+                return _png_data_url(path.read_bytes())
+    return None
+
+
+def _textures_from_model(archive: zipfile.ZipFile, model_path: str, seen: set[str] | None = None) -> list[str]:
+    seen = seen or set()
+    if model_path in seen:
+        return []
+    seen.add(model_path)
+    model = json.loads(archive.read(model_path).decode("utf-8", errors="replace"))
+    textures = _texture_values(model)
+    parent = str(model.get("parent", "")).strip()
+    parent_path = _model_reference_to_path(parent)
+    if parent_path and parent_path in archive.namelist():
+        textures.extend(_textures_from_model(archive, parent_path, seen))
+    return textures
+
+
+def _textures_from_directory_model(root: Path, model_path: Path, seen: set[Path] | None = None) -> list[str]:
+    seen = seen or set()
+    if model_path in seen:
+        return []
+    seen.add(model_path)
+    model = json.loads(model_path.read_text(encoding="utf-8", errors="replace"))
+    textures = _texture_values(model)
+    parent = str(model.get("parent", "")).strip()
+    parent_reference = _model_reference_to_path(parent)
+    if parent_reference:
+        parent_path = root / parent_reference
+        if parent_path.exists():
+            textures.extend(_textures_from_directory_model(root, parent_path, seen))
+    return textures
+
+
+def _texture_values(model: dict[str, object]) -> list[str]:
     textures = model.get("textures")
     if not isinstance(textures, dict):
-        return None
-    value = textures.get("layer0") or textures.get("all") or textures.get("particle")
-    return str(value) if value else None
+        return []
+    preferred = ["layer0", "all", "particle"]
+    ordered = [textures[key] for key in preferred if key in textures]
+    ordered.extend(value for key, value in textures.items() if key not in preferred)
+    return [str(value) for value in ordered if value and not str(value).startswith("#")]
 
 
 def _texture_reference_to_path(reference: str) -> str:
     namespace, texture = _split_item_id(reference)
     return f"assets/{namespace}/textures/{texture}.png"
+
+
+def _model_reference_to_path(reference: str) -> str | None:
+    if not reference or reference.startswith("builtin/"):
+        return None
+    namespace, model = _split_item_id(reference)
+    if not model.startswith("models/"):
+        model = f"models/{model}"
+    return f"assets/{namespace}/{model}.json"
+
+
+def _candidate_texture_paths(namespace: str, item_name: str) -> tuple[str, ...]:
+    return (
+        f"assets/{namespace}/textures/item/{item_name}.png",
+        f"assets/{namespace}/textures/items/{item_name}.png",
+        f"assets/{namespace}/textures/block/{item_name}.png",
+        f"assets/{namespace}/textures/blocks/{item_name}.png",
+        f"assets/{namespace}/textures/item/models/{item_name}.png",
+        f"assets/{namespace}/textures/entity/{item_name}.png",
+    )
 
 
 def _split_item_id(item_id: str) -> tuple[str, str]:

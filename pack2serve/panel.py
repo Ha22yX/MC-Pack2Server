@@ -83,6 +83,7 @@ class PanelService:
         self._jobs: dict[str, ProjectJob] = {}
         self._player_probe_at: dict[tuple[str, str], float] = {}
         self._player_list_probe_at: dict[str, float] = {}
+        self._inventory_probe_at: dict[tuple[str, str], float] = {}
         self._lock = threading.RLock()
 
     def import_pack(
@@ -575,8 +576,16 @@ class PanelService:
             }
         player_name = _safe_player_name(player)
         sent_commands = self._probe_player_inventory(target_name, player_name)
-        data = _online_inventory_from_log(server_dir / "logs" / "panel-server.log", player_name)
-        if not data["inventory"] and not data["enderChest"] and not data["armor"] and not data["offhand"]:
+        log_path = server_dir / "logs" / "panel-server.log"
+        data, complete = _online_inventory_probe_from_log(log_path, player_name)
+        if sent_commands and not _inventory_probe_complete(complete):
+            deadline = time.monotonic() + 0.9
+            while time.monotonic() < deadline:
+                time.sleep(0.08)
+                data, complete = _online_inventory_probe_from_log(log_path, player_name)
+                if _inventory_probe_complete(complete):
+                    break
+        if not _inventory_probe_complete(complete):
             return {
                 "targetName": target_name,
                 "player": player_name,
@@ -600,6 +609,11 @@ class PanelService:
             running = self._running.get(target_name)
             if not running or running.process.poll() is not None or not running.process.stdin:
                 return False
+            key = (target_name, player)
+            now = time.monotonic()
+            if now - self._inventory_probe_at.get(key, 0) < 1.2:
+                return True
+            self._inventory_probe_at[key] = now
         for command in (
             f"data get entity {player} Inventory",
             f"data get entity {player} EnderItems",
@@ -1617,23 +1631,37 @@ def _with_icon(server_dir: Path, item: object) -> dict[str, object]:
 
 
 def _online_inventory_from_log(log_path: Path, player: str) -> dict[str, object]:
+    payload, _complete = _online_inventory_probe_from_log(log_path, player)
+    return payload
+
+
+def _online_inventory_probe_from_log(log_path: Path, player: str) -> tuple[dict[str, object], set[str]]:
     payload = _empty_inventory_payload()
+    complete: set[str] = set()
     if not log_path.exists():
-        return payload
+        return payload, complete
     pending_sections: list[str] = []
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
         command = re.search(r">\s*data get entity ([A-Za-z0-9_]{1,16}) (Inventory|EnderItems|ArmorItems|HandItems)", line)
         if command and command.group(1) == player:
-            pending_sections.append(_inventory_probe_section(command.group(2)))
+            section = _inventory_probe_section(command.group(2))
+            if section == "inventory":
+                payload = _empty_inventory_payload()
+                complete = set()
+                pending_sections = []
+            pending_sections.append(section)
             continue
         missing = re.search(r"Found no elements matching (Inventory|EnderItems|ArmorItems|HandItems)", line)
         if missing and pending_sections:
             section = _inventory_probe_section(missing.group(1))
             if section in pending_sections:
                 pending_sections.remove(section)
+                complete.add(section)
             continue
-        entity = re.search(rf": {re.escape(player)} has the following entity data: (\[.+\])", line)
+        entity = re.search(rf": {re.escape(player)} has the following entity data: (\[.*\])", line)
         if not entity:
+            continue
+        if not pending_sections or not _looks_like_inventory_probe_output(entity.group(1)):
             continue
         current_section = pending_sections.pop(0) if pending_sections else "inventory"
         items = parse_snbt_inventory_list(entity.group(1), section=current_section)
@@ -1645,7 +1673,17 @@ def _online_inventory_from_log(log_path: Path, player: str) -> dict[str, object]
             payload["offhand"] = [_force_section(item, "offhand") for item in items[1:2]]
         else:
             payload["inventory"] = items
-    return payload
+        complete.add(current_section)
+    return payload, complete
+
+
+def _inventory_probe_complete(complete: set[str]) -> bool:
+    return {"inventory", "enderChest", "armor", "hand"}.issubset(complete)
+
+
+def _looks_like_inventory_probe_output(value: str) -> bool:
+    clean = value.strip()
+    return clean == "[]" or clean.startswith("[{")
 
 
 def _inventory_probe_section(field: str) -> str:

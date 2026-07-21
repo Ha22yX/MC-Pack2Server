@@ -981,7 +981,7 @@ PANEL_HTML = r"""<!doctype html>
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds", "files"]);
     const HOME_ROUTE = "#/projects";
     const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], onlinePlayers: [], offlinePlayers: [], selectedPlayer: "", selectedPlayerSource: "online", playerInventory: null, creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], onlinePlayers: [], offlinePlayers: [], selectedPlayer: "", selectedPlayerSource: "online", playerInventory: null, inventoryLoading: false, creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -1305,6 +1305,7 @@ PANEL_HTML = r"""<!doctype html>
       state.selectedPlayer = name;
       state.selectedPlayerSource = source;
       state.playerInventory = null;
+      state.inventoryLoading = false;
       renderPlayerDetail();
       if (source === "online") runAction(() => playerAction("probe", { player: name }));
       runAction(() => loadPlayerInventory());
@@ -1319,19 +1320,20 @@ PANEL_HTML = r"""<!doctype html>
       const pos = formatVector(player.position, "等待探测");
       const rot = formatRotation(player.rotation, "等待探测");
       const isOnline = state.selectedPlayerSource === "online";
+      const inventoryButton = `<button class="secondary" ${state.inventoryLoading ? "disabled" : ""} onclick="runAction(() => loadPlayerInventory())">${state.inventoryLoading ? "读取中" : "查看背包"}</button>`;
       $("playerDetail").innerHTML = `
         <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3>${escapeHtml(player.name)}</h3><div class="subtle">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
         <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("UUID", player.uuid || "在线探针")}${metricCard("背包", inventorySummary())}</div>
         ${isOnline ? `<div class="card-actions">
           <button class="secondary" onclick="runAction(() => playerAction('probe', { player: '${escapeAttr(player.name)}' }))">刷新状态</button>
-          <button class="secondary" onclick="runAction(() => loadPlayerInventory())">查看背包</button>
+          ${inventoryButton}
           <button class="primary" onclick="runAction(() => playerAction('op', { player: '${escapeAttr(player.name)}' }))">设为 OP</button>
           <button class="secondary" onclick="openPlayerActionDialog('gamemode', '${escapeAttr(player.name)}')">改模式</button>
           <button class="secondary" onclick="openPlayerActionDialog('tp', '${escapeAttr(player.name)}')">TP</button>
           <button class="danger" onclick="openPlayerActionDialog('ban', '${escapeAttr(player.name)}')">封禁</button>
           <button class="danger" onclick="runAction(() => playerAction('kill', { player: '${escapeAttr(player.name)}' }))">杀死</button>
           <button class="danger" onclick="runAction(() => playerAction('clear', { player: '${escapeAttr(player.name)}' }))">清空背包</button>
-        </div>` : `<div class="card-actions"><button class="secondary" onclick="runAction(() => loadPlayerInventory())">查看背包</button></div>`}
+        </div>` : `<div class="card-actions">${inventoryButton}</div>`}
         <div class="inventory-panel">${renderInventoryPanel()}</div>`;
     }
 
@@ -1342,10 +1344,17 @@ PANEL_HTML = r"""<!doctype html>
 
     async function loadPlayerInventory() {
       if (!state.selected || !state.selectedPlayer) return;
-      const payload = await api(`/api/servers/player-inventory?targetName=${encodeURIComponent(state.selected.targetName)}&player=${encodeURIComponent(state.selectedPlayer)}&source=${encodeURIComponent(state.selectedPlayerSource)}`);
-      state.playerInventory = payload.inventory;
+      if (state.inventoryLoading) return;
+      state.inventoryLoading = true;
       renderPlayerDetail();
-      if (payload.inventory.status === "probing") setTimeout(() => loadPlayerInventory().catch(() => {}), 1600);
+      try {
+        const payload = await api(`/api/servers/player-inventory?targetName=${encodeURIComponent(state.selected.targetName)}&player=${encodeURIComponent(state.selectedPlayer)}&source=${encodeURIComponent(state.selectedPlayerSource)}`);
+        state.playerInventory = payload.inventory;
+        if (payload.inventory.status === "probing") setTimeout(() => loadPlayerInventory().catch(() => {}), 700);
+      } finally {
+        state.inventoryLoading = false;
+        renderPlayerDetail();
+      }
     }
 
     function inventorySummary() {
