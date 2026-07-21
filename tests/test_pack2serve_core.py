@@ -1368,7 +1368,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
             backup = service.backup_world("sample-server", "New World")
 
             self.assertEqual(worlds["currentWorld"], "World")
-            self.assertEqual([world["name"] for world in worlds["worlds"]], ["OldWorld", "World"])
+            self.assertEqual([world["name"] for world in worlds["worlds"]], ["World", "OldWorld"])
+            self.assertTrue(worlds["worlds"][0]["current"])
             self.assertEqual(created["world"]["name"], "New World")
             self.assertTrue((server_dir / "New World").exists())
             self.assertEqual(selected["currentWorld"], "New World")
@@ -1472,6 +1473,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn("/api/servers/metrics", PANEL_HTML)
         self.assertIn("/api/servers/mods", PANEL_HTML)
         self.assertIn("/api/servers/worlds", PANEL_HTML)
+        self.assertIn('world-row${world.current ? " current" : ""}', PANEL_HTML)
+        self.assertIn(".world-row.current", PANEL_HTML)
         self.assertIn("/api/servers/key-settings", PANEL_HTML)
         self.assertIn("/api/servers/command-suggestions", PANEL_HTML)
         self.assertIn("button, input, textarea, select", PANEL_HTML)

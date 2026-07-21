@@ -583,6 +583,11 @@ PANEL_HTML = r"""<!doctype html>
       background: #fffefa;
       padding: 9px;
     }
+    .world-row.current {
+      border-color: var(--accent);
+      background: #f1fbf6;
+      box-shadow: 0 0 0 3px rgb(22 114 95 / .12);
+    }
     .mod-icon { width: 36px; height: 36px; border-radius: 8px; background: #e4e1d7; object-fit: cover; image-rendering: pixelated; }
     .world-icon {
       width: 36px;
@@ -1193,7 +1198,7 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     function worldRow(world) {
-      return `<div class="world-row">
+      return `<div class="world-row${world.current ? " current" : ""}">
         <div class="world-icon">W</div>
         <div>
           <strong>${escapeHtml(world.name)}</strong>

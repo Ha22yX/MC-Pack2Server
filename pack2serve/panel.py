@@ -540,6 +540,7 @@ class PanelService:
         properties = _read_properties(server_dir / "server.properties")
         current_world = properties.get("level-name", "world")
         worlds = [_world_entry(path, current_world=current_world) for path in _world_directories(server_dir)]
+        worlds.sort(key=lambda world: (not bool(world["current"]), str(world["name"]).lower()))
         return {
             "targetName": target_name,
             "currentWorld": current_world,
