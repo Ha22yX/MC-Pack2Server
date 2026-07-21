@@ -245,7 +245,8 @@ class PanelService:
             data = json.loads(report_path.read_text(encoding="utf-8"))
             server_dir = report_path.parents[1]
             target_name = server_dir.relative_to(self.servers_dir).as_posix()
-            internal_project = _is_internal_project(target_name)
+            metadata = _read_project_metadata(server_dir)
+            internal_project = _project_internal_status(target_name, metadata)
             if internal_project and not include_internal:
                 continue
             summary = _summary_from_report(target_name, data)
@@ -970,6 +971,12 @@ def _is_internal_project(target_name: str) -> bool:
     )
 
 
+def _project_internal_status(target_name: str, metadata: dict[str, object]) -> bool:
+    if isinstance(metadata.get("internal"), bool):
+        return bool(metadata["internal"])
+    return _is_internal_project(target_name)
+
+
 def _default_start_command(server_dir: Path) -> list[str]:
     start = server_dir / "start.ps1"
     if start.exists():
@@ -1117,6 +1124,7 @@ def _write_project_metadata(server_dir: Path, display_name: str) -> None:
         json.dumps(
             {
                 "displayName": display_name.strip() or server_dir.name,
+                "internal": False,
                 "targetName": server_dir.name,
             },
             ensure_ascii=False,
@@ -1126,7 +1134,7 @@ def _write_project_metadata(server_dir: Path, display_name: str) -> None:
     )
 
 
-def _read_project_metadata(server_dir: Path) -> dict[str, str]:
+def _read_project_metadata(server_dir: Path) -> dict[str, object]:
     metadata_path = server_dir / "pack2serve" / "project.json"
     if not metadata_path.exists():
         return {}
@@ -1134,8 +1142,13 @@ def _read_project_metadata(server_dir: Path) -> dict[str, str]:
         data = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    metadata: dict[str, object] = {}
     display_name = str(data.get("displayName", "")).strip()
-    return {"displayName": display_name} if display_name else {}
+    if display_name:
+        metadata["displayName"] = display_name
+    if isinstance(data.get("internal"), bool):
+        metadata["internal"] = data["internal"]
+    return metadata
 
 
 def _normalize_server_setting(key: str, value: object) -> str:

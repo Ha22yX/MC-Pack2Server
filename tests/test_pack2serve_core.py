@@ -835,6 +835,25 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual({server["targetName"] for server in all_servers}, {"my-public-server", "full-verification/sample-server"})
             self.assertFalse(public[0]["internalProject"])
 
+    def test_panel_service_project_metadata_can_promote_verification_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/startup-verification-2026-07-21/into-the-backrooms"
+            pack2serve_dir = server_dir / "pack2serve"
+            pack2serve_dir.mkdir(parents=True)
+            _write_minimal_build_report(server_dir, name="Into the backrooms")
+            (pack2serve_dir / "project.json").write_text(
+                json.dumps({"displayName": "Into the Backrooms", "internal": False}),
+                encoding="utf-8",
+            )
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            servers = service.list_servers()
+
+            self.assertEqual([server["targetName"] for server in servers], ["startup-verification-2026-07-21/into-the-backrooms"])
+            self.assertFalse(servers[0]["internalProject"])
+            self.assertEqual(servers[0]["name"], "Into the Backrooms")
+
     def test_panel_service_starts_and_stops_generated_server_process(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
