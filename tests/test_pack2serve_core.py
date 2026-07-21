@@ -856,6 +856,32 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(saved["properties"]["difficulty"], "hard")
             self.assertIn("motd=New", (server_dir / "server.properties").read_text(encoding="utf-8"))
 
+    def test_panel_service_updates_key_server_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "server.properties").write_text(
+                "server-port=25565\nonline-mode=true\nmax-players=20\nmotd=Old\n",
+                encoding="utf-8",
+            )
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            saved = service.save_key_server_settings(
+                "sample-server",
+                {"server-port": 25666, "online-mode": False, "max-players": 8},
+            )
+
+            self.assertEqual(saved["settings"]["server-port"]["value"], "25666")
+            self.assertEqual(saved["settings"]["online-mode"]["value"], "false")
+            self.assertEqual(saved["settings"]["max-players"]["value"], "8")
+            content = (server_dir / "server.properties").read_text(encoding="utf-8")
+            self.assertIn("server-port=25666", content)
+            self.assertIn("online-mode=false", content)
+            self.assertIn("max-players=8", content)
+            self.assertIn("motd=Old", content)
+
     def test_panel_service_sends_console_command_to_running_server(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -889,6 +915,49 @@ class Pack2ServeCoreTests(unittest.TestCase):
 
             self.assertEqual(result["command"], "say hello")
             self.assertIn("say hello", commands_file.read_text(encoding="utf-8"))
+
+    def test_panel_service_sends_player_management_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "server.properties").write_text("server-port=25655\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="Runnable Sample")
+            commands_file = tmp_path / "commands.txt"
+            fake_server = tmp_path / "fake_server.py"
+            fake_server.write_text(
+                "import pathlib, sys\n"
+                f"commands = pathlib.Path({str(commands_file)!r})\n"
+                "print('Done (0.1s)! For help, type \"help\"', flush=True)\n"
+                "for line in sys.stdin:\n"
+                "    commands.write_text(commands.read_text() + line, encoding='utf-8') if commands.exists() else commands.write_text(line, encoding='utf-8')\n"
+                "    if line.strip() == 'stop':\n"
+                "        break\n",
+                encoding="utf-8",
+            )
+            (server_dir / "start.ps1").write_text(f"& python '{fake_server}'\n", encoding="utf-8")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            service.start_server("sample-server")
+            deadline = time.time() + 10
+            while service.server_runtime_status("sample-server")["runtimeStatus"] != "running" and time.time() < deadline:
+                time.sleep(0.05)
+
+            service.player_action("sample-server", "op", player="Alice")
+            service.player_action("sample-server", "gamemode", player="Alice", gameMode="creative")
+            service.player_action("sample-server", "tp", player="Alice", x=1, y=70, z=-2)
+            service.player_action("sample-server", "ban", player="Alice", reason="test only")
+            service.player_action("sample-server", "kill", player="Alice")
+            service.player_action("sample-server", "clear", player="Alice")
+            service.stop_server("sample-server")
+
+            commands = commands_file.read_text(encoding="utf-8")
+            self.assertIn("op Alice\n", commands)
+            self.assertIn("gamemode creative Alice\n", commands)
+            self.assertIn("tp Alice 1 70 -2\n", commands)
+            self.assertIn("ban Alice test only\n", commands)
+            self.assertIn("kill Alice\n", commands)
+            self.assertIn("clear Alice\n", commands)
 
     def test_panel_service_creates_project_job_and_accepts_eula(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1078,6 +1147,92 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual([player["name"] for player in players["players"]], ["Bob"])
             self.assertEqual(players["players"][0]["gameMode"], "unknown")
 
+    def test_panel_service_parses_player_details_from_command_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            (server_dir / "server.properties").write_text("server-port=25565\n", encoding="utf-8")
+            (server_dir / "logs/panel-server.log").write_text(
+                "[Server thread/INFO]: Alice joined the game\n"
+                "[Server thread/INFO]: Set Alice's game mode to Creative Mode\n"
+                "[Server thread/INFO]: Alice has the following entity data: [1.5d, 70.0d, -2.25d]\n"
+                "[Server thread/INFO]: Alice has the following entity data: [180.0f, 20.0f]\n"
+                "[Server thread/INFO]: The time is 49000\n",
+                encoding="utf-8",
+            )
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            players = service.server_players("sample-server")
+            metrics = service.server_metrics("sample-server")
+
+            self.assertEqual(players["players"][0]["name"], "Alice")
+            self.assertEqual(players["players"][0]["gameMode"], "creative")
+            self.assertEqual(players["players"][0]["position"], {"x": 1.5, "y": 70.0, "z": -2.25})
+            self.assertEqual(players["players"][0]["rotation"], {"yaw": 180.0, "pitch": 20.0})
+            self.assertEqual(metrics["world"]["gameTime"], 49000)
+            self.assertEqual(metrics["world"]["days"], 2)
+
+    def test_panel_service_lists_and_manages_mod_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "mods").mkdir(parents=True)
+            (server_dir / "server.properties").write_text("server-port=25565\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            mod_path = server_dir / "mods/example-mod.jar"
+            write_zip(
+                mod_path,
+                {
+                    "fabric.mod.json": json.dumps(
+                        {
+                            "id": "examplemod",
+                            "name": "Example Mod",
+                            "version": "1.2.3",
+                            "icon": "assets/examplemod/icon.png",
+                        }
+                    ),
+                    "assets/examplemod/icon.png": b"\x89PNG\r\n\x1a\n",
+                },
+            )
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            mods = service.server_mods("sample-server")
+            disabled = service.disable_mod("sample-server", "example-mod.jar")
+
+            self.assertEqual(mods["mods"][0]["title"], "Example Mod")
+            self.assertEqual(mods["mods"][0]["id"], "examplemod")
+            self.assertEqual(mods["mods"][0]["fileName"], "example-mod.jar")
+            self.assertTrue(str(mods["mods"][0]["iconDataUrl"]).startswith("data:image/png;base64,"))
+            self.assertEqual(disabled["status"], "disabled")
+            self.assertFalse((server_dir / "mods/example-mod.jar").exists())
+            self.assertTrue((server_dir / "disabled-mods/example-mod.jar").exists())
+            deleted = service.delete_mod("sample-server", "example-mod.jar")
+            self.assertEqual(deleted["status"], "deleted")
+            self.assertFalse((server_dir / "disabled-mods/example-mod.jar").exists())
+
+    def test_panel_service_returns_command_suggestions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            (server_dir / "server.properties").write_text("server-port=25565\n", encoding="utf-8")
+            (server_dir / "logs/panel-server.log").write_text(
+                "[Server thread/INFO]: Alice joined the game\n",
+                encoding="utf-8",
+            )
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            suggestions = service.command_suggestions("sample-server", "gam")
+
+            self.assertIn("gamemode creative Alice", suggestions["suggestions"])
+            self.assertIn("gamemode survival Alice", suggestions["suggestions"])
+
     def test_panel_service_deletes_project_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1113,6 +1268,11 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('id="projectGrid"', PANEL_HTML)
         self.assertIn('id="createDialog"', PANEL_HTML)
         self.assertIn('id="consoleCommand"', PANEL_HTML)
+        self.assertIn('id="metricsGrid"', PANEL_HTML)
+        self.assertIn('id="playerDetail"', PANEL_HTML)
+        self.assertIn('id="modsList"', PANEL_HTML)
+        self.assertIn('id="keySettings"', PANEL_HTML)
+        self.assertIn('id="commandSuggestions"', PANEL_HTML)
         self.assertIn('id="showInternalProjects"', PANEL_HTML)
         self.assertIn('id="detailDelete"', PANEL_HTML)
         self.assertIn('id="packFile"', PANEL_HTML)
@@ -1120,6 +1280,10 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('type="file"', PANEL_HTML)
         self.assertIn("/api/projects/upload", PANEL_HTML)
         self.assertIn("/api/servers/delete", PANEL_HTML)
+        self.assertIn("/api/servers/metrics", PANEL_HTML)
+        self.assertIn("/api/servers/mods", PANEL_HTML)
+        self.assertIn("/api/servers/key-settings", PANEL_HTML)
+        self.assertIn("/api/servers/command-suggestions", PANEL_HTML)
         self.assertNotIn('id="packPath"', PANEL_HTML)
         self.assertNotIn('id="mirrors"', PANEL_HTML)
 

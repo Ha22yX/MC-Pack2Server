@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import subprocess
 import threading
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
@@ -366,7 +368,162 @@ class PanelService:
         _write_properties(path, current)
         return self.server_properties(target_name)
 
+    def key_server_settings(self, target_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        properties = _read_properties(server_dir / "server.properties")
+        return {
+            "targetName": target_name,
+            "settings": {
+                key: {
+                    **definition,
+                    "value": properties.get(key, definition["default"]),
+                }
+                for key, definition in _KEY_SERVER_SETTINGS.items()
+            },
+        }
+
+    def save_key_server_settings(self, target_name: str, settings: dict[str, object]) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        path = server_dir / "server.properties"
+        current = _read_properties(path)
+        for key, value in settings.items():
+            if key not in _KEY_SERVER_SETTINGS:
+                raise ValueError(f"Unsupported key server setting: {key}")
+            current[key] = _normalize_server_setting(key, value)
+        _write_properties(path, current)
+        return self.key_server_settings(target_name)
+
     def server_players(self, target_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        log_path = server_dir / "logs" / "panel-server.log"
+        players = _players_from_log(log_path)
+        return {
+            "targetName": target_name,
+            "players": list(players.values()),
+            "capabilities": {
+                "gameMode": "log-derived",
+                "position": "log-derived-after-probe",
+                "rotation": "log-derived-after-probe",
+                "inventory": "requires-management-probe",
+                "note": "玩家状态先从控制台日志与探测命令推断；完整背包与模组命令树需要服务端管理探针或 RCON 扩展。",
+            },
+        }
+
+    def server_metrics(self, target_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        properties = _read_properties(server_dir / "server.properties")
+        world_name = properties.get("level-name", "world")
+        world_dir = server_dir / world_name
+        runtime = self.server_runtime_status(target_name)
+        game_time = _latest_world_time(server_dir / "logs" / "panel-server.log")
+        return {
+            "targetName": target_name,
+            "runtime": runtime,
+            "world": {
+                "name": world_name,
+                "path": str(world_dir),
+                "sizeBytes": _directory_size(world_dir),
+                "gameTime": game_time,
+                "days": game_time // 24000 if game_time is not None else None,
+            },
+            "resources": {
+                "projectSizeBytes": _directory_size(server_dir),
+                "memoryBytes": _process_memory_bytes(runtime.get("pid")),
+            },
+        }
+
+    def player_action(self, target_name: str, action: str, **kwargs: object) -> dict[str, object]:
+        action = action.strip().lower()
+        player = _safe_player_name(str(kwargs.get("player", "")))
+        if action == "op":
+            commands = [f"op {player}"]
+        elif action == "deop":
+            commands = [f"deop {player}"]
+        elif action == "gamemode":
+            commands = [f"gamemode {_safe_game_mode(str(kwargs.get('gameMode', '')))} {player}"]
+        elif action == "tp":
+            commands = [
+                f"tp {player} {_safe_coordinate(kwargs.get('x'))} {_safe_coordinate(kwargs.get('y'))} {_safe_coordinate(kwargs.get('z'))}"
+            ]
+        elif action == "ban":
+            reason = _safe_command_tail(str(kwargs.get("reason", ""))).strip() or "Banned by Pack2Serve"
+            commands = [f"ban {player} {reason}"]
+        elif action == "kill":
+            commands = [f"kill {player}"]
+        elif action == "clear":
+            commands = [f"clear {player}"]
+        elif action == "probe":
+            commands = [f"data get entity {player} Pos", f"data get entity {player} Rotation"]
+        else:
+            raise ValueError(f"Unsupported player action: {action}")
+        for command in commands:
+            self.send_console_command(target_name, command)
+        return {"targetName": target_name, "action": action, "player": player, "commands": commands}
+
+    def server_mods(self, target_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        mods: list[dict[str, object]] = []
+        for directory, enabled in ((server_dir / "mods", True), (server_dir / "disabled-mods", False)):
+            if directory.exists():
+                mods.extend(_read_mod_entry(path, enabled=enabled) for path in sorted(directory.glob("*.jar")))
+        return {
+            "targetName": target_name,
+            "mods": mods,
+            "counts": {
+                "enabled": sum(1 for mod in mods if mod["enabled"]),
+                "disabled": sum(1 for mod in mods if not mod["enabled"]),
+            },
+        }
+
+    def add_mod(self, target_name: str, filename: str, content: bytes) -> dict[str, object]:
+        if not content:
+            raise ValueError("Uploaded mod file is empty.")
+        safe_name = _safe_mod_filename(filename)
+        server_dir = self._server_dir(target_name)
+        target = server_dir / "mods" / safe_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        return {"targetName": target_name, "status": "added", "mod": _read_mod_entry(target, enabled=True)}
+
+    def disable_mod(self, target_name: str, file_name: str) -> dict[str, object]:
+        safe_name = _safe_mod_filename(file_name)
+        server_dir = self._server_dir(target_name)
+        source = server_dir / "mods" / safe_name
+        target = server_dir / "disabled-mods" / safe_name
+        if not source.exists():
+            if target.exists():
+                return {"targetName": target_name, "fileName": safe_name, "status": "disabled"}
+            raise ValueError(f"Unknown mod file: {safe_name}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        return {"targetName": target_name, "fileName": safe_name, "status": "disabled"}
+
+    def delete_mod(self, target_name: str, file_name: str) -> dict[str, object]:
+        safe_name = _safe_mod_filename(file_name)
+        server_dir = self._server_dir(target_name)
+        for directory in (server_dir / "mods", server_dir / "disabled-mods"):
+            path = directory / safe_name
+            if path.exists():
+                path.unlink()
+                return {"targetName": target_name, "fileName": safe_name, "status": "deleted"}
+        raise ValueError(f"Unknown mod file: {safe_name}")
+
+    def command_suggestions(self, target_name: str, prefix: str = "") -> dict[str, object]:
+        players = [str(player["name"]) for player in self.server_players(target_name)["players"]]
+        candidates = _command_suggestion_candidates(players)
+        clean_prefix = prefix.strip().lower()
+        suggestions = [item for item in candidates if item.lower().startswith(clean_prefix)] if clean_prefix else candidates
+        return {
+            "targetName": target_name,
+            "prefix": prefix,
+            "suggestions": suggestions[:60],
+            "capabilities": {
+                "vanilla": True,
+                "moddedCommandTree": "requires-rcon-or-management-probe",
+            },
+        }
+
+    def _legacy_server_players(self, target_name: str) -> dict[str, object]:
         server_dir = self._server_dir(target_name)
         log_path = server_dir / "logs" / "panel-server.log"
         players: dict[str, dict[str, object]] = {}
@@ -508,6 +665,58 @@ class PanelService:
                 running.process.stdin.close()
 
 
+_KEY_SERVER_SETTINGS: dict[str, dict[str, object]] = {
+    "server-port": {
+        "label": "服务器端口",
+        "type": "number",
+        "default": "25565",
+        "min": 1,
+        "max": 65535,
+        "description": "玩家连接服务器使用的端口。",
+    },
+    "online-mode": {
+        "label": "正版验证",
+        "type": "boolean",
+        "default": "true",
+        "description": "开启后服务器会验证 Mojang/Microsoft 正版登录。",
+    },
+    "max-players": {
+        "label": "最大玩家数",
+        "type": "number",
+        "default": "20",
+        "min": 1,
+        "max": 100000,
+        "description": "同时在线玩家上限。",
+    },
+    "difficulty": {
+        "label": "游戏难度",
+        "type": "select",
+        "default": "easy",
+        "options": ["peaceful", "easy", "normal", "hard"],
+        "description": "世界默认难度。",
+    },
+    "gamemode": {
+        "label": "默认游戏模式",
+        "type": "select",
+        "default": "survival",
+        "options": ["survival", "creative", "adventure", "spectator"],
+        "description": "新玩家默认游戏模式。",
+    },
+    "motd": {
+        "label": "服务器描述",
+        "type": "text",
+        "default": "A Minecraft Server",
+        "description": "服务器列表中显示的 MOTD。",
+    },
+    "level-name": {
+        "label": "世界文件夹",
+        "type": "text",
+        "default": "world",
+        "description": "服务器加载的世界目录名称。",
+    },
+}
+
+
 def _summary_from_report(target_name: str, report: dict[str, object]) -> dict[str, object]:
     pack = report["pack"]
     loader = pack["loader"]
@@ -619,6 +828,260 @@ def _read_properties(path: Path) -> dict[str, str]:
 def _write_properties(path: Path, properties: dict[str, str]) -> None:
     lines = [f"{key}={value}" for key, value in sorted(properties.items())]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _normalize_server_setting(key: str, value: object) -> str:
+    definition = _KEY_SERVER_SETTINGS[key]
+    kind = definition["type"]
+    if kind == "boolean":
+        return "true" if str(value).strip().lower() in {"1", "true", "yes", "on"} or value is True else "false"
+    if kind == "number":
+        try:
+            number = int(str(value).strip())
+        except ValueError as exc:
+            raise ValueError(f"{key} must be a number.") from exc
+        minimum = int(definition.get("min", number))
+        maximum = int(definition.get("max", number))
+        if number < minimum or number > maximum:
+            raise ValueError(f"{key} must be between {minimum} and {maximum}.")
+        return str(number)
+    if kind == "select":
+        clean = str(value).strip().lower()
+        options = set(str(option) for option in definition.get("options", []))
+        if clean not in options:
+            raise ValueError(f"{key} must be one of: {', '.join(sorted(options))}.")
+        return clean
+    return str(value).replace("\r", "").replace("\n", " ").strip()
+
+
+def _players_from_log(log_path: Path) -> dict[str, dict[str, object]]:
+    players: dict[str, dict[str, object]] = {}
+    if not log_path.exists():
+        return players
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        joined = re.search(r": ([A-Za-z0-9_]{1,16}) joined the game", line)
+        left = re.search(r": ([A-Za-z0-9_]{1,16}) left the game", line)
+        mode = re.search(r"Set ([A-Za-z0-9_]{1,16})'s game mode to ([A-Za-z ]+)", line)
+        entity = re.search(r": ([A-Za-z0-9_]{1,16}) has the following entity data: \[(.+)\]", line)
+        if joined:
+            name = joined.group(1)
+            players[name] = {
+                "name": name,
+                "status": "online",
+                "gameMode": players.get(name, {}).get("gameMode", "unknown"),
+                "position": players.get(name, {}).get("position"),
+                "rotation": players.get(name, {}).get("rotation"),
+                "respawnPoint": players.get(name, {}).get("respawnPoint"),
+                "skinUrl": f"https://minotar.net/avatar/{name}/64",
+                "inventory": [],
+                "source": "log",
+            }
+        if mode and mode.group(1) in players:
+            players[mode.group(1)]["gameMode"] = _normalize_game_mode(mode.group(2))
+        if entity and entity.group(1) in players:
+            vector = _parse_minecraft_vector(entity.group(2))
+            if len(vector) == 3:
+                players[entity.group(1)]["position"] = {"x": vector[0], "y": vector[1], "z": vector[2]}
+            elif len(vector) == 2:
+                players[entity.group(1)]["rotation"] = {"yaw": vector[0], "pitch": vector[1]}
+        if left:
+            players.pop(left.group(1), None)
+    return players
+
+
+def _normalize_game_mode(value: str) -> str:
+    clean = value.strip().lower().replace(" mode", "").replace(" ", "-")
+    for mode in ("survival", "creative", "adventure", "spectator"):
+        if mode in clean:
+            return mode
+    return clean or "unknown"
+
+
+def _parse_minecraft_vector(value: str) -> list[float]:
+    parts = []
+    for raw in value.split(","):
+        number = re.sub(r"[A-Za-z]$", "", raw.strip())
+        try:
+            parts.append(float(number))
+        except ValueError:
+            return []
+    return parts
+
+
+def _latest_world_time(log_path: Path) -> int | None:
+    if not log_path.exists():
+        return None
+    game_time: int | None = None
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = re.search(r"The time is (\d+)", line)
+        if match:
+            game_time = int(match.group(1))
+    return game_time
+
+
+def _directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for item in path.rglob("*"):
+        try:
+            if item.is_file():
+                total += item.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _process_memory_bytes(pid: object) -> int | None:
+    if not pid:
+        return None
+    try:
+        if os.name == "nt":
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            if result.returncode != 0 or "No tasks" in result.stdout:
+                return None
+            columns = next(iter(result.stdout.splitlines()), "").split('","')
+            if len(columns) < 5:
+                return None
+            raw = columns[4].strip('"').replace(",", "").replace("K", "").strip()
+            return int(raw) * 1024 if raw.isdigit() else None
+        result = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        raw = result.stdout.strip()
+        return int(raw) * 1024 if raw.isdigit() else None
+    except (OSError, ValueError):
+        return None
+
+
+def _safe_player_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,16}", value.strip()):
+        raise ValueError(f"Invalid player name: {value}")
+    return value.strip()
+
+
+def _safe_game_mode(value: str) -> str:
+    clean = value.strip().lower()
+    if clean not in {"survival", "creative", "adventure", "spectator"}:
+        raise ValueError(f"Invalid game mode: {value}")
+    return clean
+
+
+def _safe_coordinate(value: object) -> str:
+    raw = str(value).strip()
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", raw):
+        raise ValueError(f"Invalid coordinate: {value}")
+    return raw
+
+
+def _safe_command_tail(value: str) -> str:
+    return value.replace("\r", " ").replace("\n", " ").strip()[:160]
+
+
+def _safe_mod_filename(filename: str) -> str:
+    safe_name = Path(filename.replace("\\", "/")).name.strip()
+    if not safe_name.lower().endswith(".jar"):
+        raise ValueError("Mod file must be a .jar file.")
+    if not re.fullmatch(r"[A-Za-z0-9._+() -]+\.jar", safe_name):
+        raise ValueError(f"Invalid mod file name: {filename}")
+    return safe_name
+
+
+def _read_mod_entry(path: Path, *, enabled: bool) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    icon_data_url: str | None = None
+    try:
+        with zipfile.ZipFile(path) as jar:
+            names = set(jar.namelist())
+            if "fabric.mod.json" in names:
+                metadata = json.loads(jar.read("fabric.mod.json").decode("utf-8", errors="replace"))
+                icon_path = str(metadata.get("icon", "")).strip()
+                if icon_path in names:
+                    icon_data_url = _jar_icon_data_url(jar, icon_path)
+            elif "mcmod.info" in names:
+                parsed = json.loads(jar.read("mcmod.info").decode("utf-8", errors="replace"))
+                if isinstance(parsed, list) and parsed:
+                    metadata = parsed[0]
+            elif "META-INF/mods.toml" in names:
+                metadata = _parse_mods_toml(jar.read("META-INF/mods.toml").decode("utf-8", errors="replace"))
+    except (OSError, zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError):
+        metadata = {}
+    title = str(metadata.get("name") or metadata.get("displayName") or path.stem)
+    mod_id = str(metadata.get("id") or metadata.get("modid") or path.stem)
+    return {
+        "fileName": path.name,
+        "title": title,
+        "id": mod_id,
+        "version": str(metadata.get("version", "")),
+        "enabled": enabled,
+        "status": "enabled" if enabled else "disabled",
+        "sizeBytes": path.stat().st_size,
+        "iconDataUrl": icon_data_url,
+    }
+
+
+def _jar_icon_data_url(jar: zipfile.ZipFile, icon_path: str) -> str | None:
+    try:
+        data = jar.read(icon_path)
+    except KeyError:
+        return None
+    if len(data) > 256 * 1024:
+        return None
+    suffix = Path(icon_path).suffix.lower()
+    media_type = "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/png"
+    return f"data:{media_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _parse_mods_toml(content: str) -> dict[str, object]:
+    metadata: dict[str, object] = {}
+    for key, target in (("modId", "id"), ("displayName", "name"), ("version", "version")):
+        match = re.search(rf"^\s*{key}\s*=\s*\"([^\"]+)\"", content, flags=re.MULTILINE)
+        if match:
+            metadata[target] = match.group(1)
+    return metadata
+
+
+def _command_suggestion_candidates(players: list[str]) -> list[str]:
+    player_targets = players or ["<player>"]
+    commands = [
+        "help",
+        "list",
+        "time query daytime",
+        "time query gametime",
+        "say ",
+        "save-all",
+        "stop",
+    ]
+    for player in player_targets:
+        commands.extend(
+            [
+                f"gamemode survival {player}",
+                f"gamemode creative {player}",
+                f"gamemode adventure {player}",
+                f"gamemode spectator {player}",
+                f"op {player}",
+                f"deop {player}",
+                f"tp {player} ",
+                f"kill {player}",
+                f"clear {player}",
+                f"ban {player} ",
+                f"data get entity {player} Pos",
+                f"data get entity {player} Rotation",
+            ]
+        )
+    return commands
 
 
 def _read_compatibility_summary(server_dir: Path) -> dict[str, object]:

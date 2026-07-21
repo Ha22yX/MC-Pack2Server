@@ -46,8 +46,27 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                 if route == "/api/servers/properties":
                     self._send_json({"serverProperties": service.server_properties(query.get("targetName", [""])[0])})
                     return
+                if route == "/api/servers/key-settings":
+                    self._send_json({"keySettings": service.key_server_settings(query.get("targetName", [""])[0])})
+                    return
                 if route == "/api/servers/players":
                     self._send_json({"players": service.server_players(query.get("targetName", [""])[0])})
+                    return
+                if route == "/api/servers/metrics":
+                    self._send_json({"metrics": service.server_metrics(query.get("targetName", [""])[0])})
+                    return
+                if route == "/api/servers/mods":
+                    self._send_json({"mods": service.server_mods(query.get("targetName", [""])[0])})
+                    return
+                if route == "/api/servers/command-suggestions":
+                    self._send_json(
+                        {
+                            "suggestions": service.command_suggestions(
+                                query.get("targetName", [""])[0],
+                                query.get("prefix", [""])[0],
+                            )
+                        }
+                    )
                     return
                 self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -69,6 +88,21 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                                 project_name=_uploaded_project_name(fields, upload),
                                 accept_eula=_truthy(fields.get("acceptEula", "")),
                                 download=_truthy(fields.get("download", "true")),
+                            )
+                        }
+                    )
+                    return
+                if route == "/api/servers/mods/upload":
+                    fields, files = self._read_multipart_form()
+                    upload = files.get("modFile")
+                    if upload is None or not upload.content:
+                        raise ValueError("Please choose a .jar mod file.")
+                    self._send_json(
+                        {
+                            "result": service.add_mod(
+                                fields.get("targetName", ""),
+                                upload.filename,
+                                upload.content,
                             )
                         }
                     )
@@ -117,6 +151,33 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                             )
                         }
                     )
+                    return
+                if route == "/api/servers/key-settings":
+                    self._send_json(
+                        {
+                            "keySettings": service.save_key_server_settings(
+                                payload["targetName"],
+                                dict(payload.get("settings", {})),
+                            )
+                        }
+                    )
+                    return
+                if route == "/api/servers/player-action":
+                    self._send_json(
+                        {
+                            "result": service.player_action(
+                                payload["targetName"],
+                                payload["action"],
+                                **dict(payload.get("args", {})),
+                            )
+                        }
+                    )
+                    return
+                if route == "/api/servers/mods/disable":
+                    self._send_json({"result": service.disable_mod(payload["targetName"], payload["fileName"])})
+                    return
+                if route == "/api/servers/mods/delete":
+                    self._send_json({"result": service.delete_mod(payload["targetName"], payload["fileName"])})
                     return
                 self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -427,8 +488,54 @@ PANEL_HTML = r"""<!doctype html>
     .stage { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; }
     .stage.current { color: var(--ink); font-weight: 760; }
     .properties-editor { min-height: 430px; font: 13px/1.45 Consolas, "Cascadia Mono", monospace; }
+    .settings-grid, .metrics-grid, .player-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .mini-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffefa;
+      padding: 12px;
+      min-height: 74px;
+    }
+    .mini-card strong { display: block; margin-top: 5px; font-size: 16px; }
     .players { display: grid; gap: 8px; }
-    .player-row { display: flex; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fffefa; }
+    .player-row { display: flex; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fffefa; cursor: pointer; }
+    .player-row.active { border-color: var(--accent); box-shadow: 0 0 0 3px rgb(22 114 95 / .12); }
+    .player-profile { display: grid; grid-template-columns: 72px 1fr; gap: 12px; align-items: start; margin-bottom: 12px; }
+    .player-skin { width: 64px; height: 64px; border-radius: 8px; image-rendering: pixelated; background: #e4e1d7; }
+    .mod-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+    .mod-toolbar input { width: auto; flex: 1; }
+    .mod-list { display: grid; gap: 9px; }
+    .mod-row {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffefa;
+      padding: 9px;
+    }
+    .mod-icon { width: 36px; height: 36px; border-radius: 8px; background: #e4e1d7; object-fit: cover; image-rendering: pixelated; }
+    .command-wrap { position: relative; }
+    .suggestions {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 6px);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fffefa;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      z-index: 10;
+    }
+    .suggestion { padding: 8px 10px; font: 12px Consolas, "Cascadia Mono", monospace; cursor: pointer; }
+    .suggestion:hover { background: #e4e1d7; }
     dialog {
       width: min(620px, calc(100vw - 28px));
       padding: 0;
@@ -549,23 +656,42 @@ PANEL_HTML = r"""<!doctype html>
         <div class="detail-layout">
           <div class="panel">
             <div class="tabs">
+              <button class="tab" data-tab="status">运行总览</button>
               <button class="tab active" data-tab="logs">日志控制台</button>
               <button class="tab" data-tab="properties">服务器参数</button>
               <button class="tab" data-tab="players">在线玩家</button>
+              <button class="tab" data-tab="mods">模组列表</button>
+            </div>
+            <div id="tabStatus" class="hidden">
+              <div class="metrics-grid" id="metricsGrid"></div>
             </div>
             <div id="tabLogs">
               <pre class="log-box" id="logBody">暂无日志。</pre>
               <div class="console-row">
-                <input id="consoleCommand" placeholder="输入控制台指令，例如 say hello 或 list">
+                <div class="command-wrap">
+                  <div class="suggestions hidden" id="commandSuggestions"></div>
+                  <input id="consoleCommand" placeholder="输入控制台指令，例如 gamemode creative Steve">
+                </div>
                 <button class="primary" id="sendCommand">发送</button>
               </div>
             </div>
             <div id="tabProperties" class="hidden">
+              <div class="settings-grid" id="keySettings"></div>
+              <div class="card-actions"><button class="primary" id="saveKeySettings">保存常用参数</button></div>
+              <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
               <textarea class="properties-editor" id="propertiesEditor" spellcheck="false"></textarea>
               <div class="card-actions"><button class="primary" id="saveProperties">保存 server.properties</button></div>
             </div>
             <div id="tabPlayers" class="hidden">
               <div class="players" id="playersList"></div>
+              <div class="mini-card" id="playerDetail" style="margin-top:12px"></div>
+            </div>
+            <div id="tabMods" class="hidden">
+              <div class="mod-toolbar">
+                <input id="modFile" type="file" accept=".jar,application/java-archive">
+                <button class="primary" id="addMod">添加模组</button>
+              </div>
+              <div class="mod-list" id="modsList"></div>
             </div>
           </div>
           <aside class="panel">
@@ -610,6 +736,415 @@ PANEL_HTML = r"""<!doctype html>
   <div class="toast-stack" id="toastStack"></div>
 
   <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "" };
+
+    async function api(path, options = {}) {
+      const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
+      const response = await fetch(path, { headers, ...options });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || response.statusText);
+      return payload;
+    }
+
+    function toast(message) {
+      const item = document.createElement("div");
+      item.className = "toast";
+      item.textContent = message;
+      $("toastStack").appendChild(item);
+      setTimeout(() => item.remove(), 4200);
+    }
+
+    async function runAction(action) {
+      try { await action(); } catch (error) { toast(error.message); }
+    }
+
+    async function refresh() {
+      const payload = await api(`/api/servers?includeInternal=${state.showInternal ? "true" : "false"}`);
+      state.servers = payload.servers;
+      renderHome();
+      if (state.selected) {
+        const latest = state.servers.find((server) => server.targetName === state.selected.targetName);
+        if (latest) {
+          state.selected = latest;
+          renderDetail();
+        }
+      }
+    }
+
+    function renderHome() {
+      $("metricTotal").textContent = state.servers.length;
+      $("metricRunning").textContent = state.servers.filter((server) => server.runtimeStatus === "running").length;
+      $("metricVerified").textContent = state.servers.filter((server) => server.serverEquivalent).length;
+      $("metricReview").textContent = state.servers.filter((server) => !server.serverEquivalent).length;
+      $("projectGrid").innerHTML = state.servers.map(cardTemplate).join("") || `<div class="panel"><h3>还没有正式项目</h3><p class="subtle">点击右上角创建项目，选择 .mrpack 或 .zip 整合包生成服务端。</p></div>`;
+    }
+
+    function cardTemplate(server) {
+      return `<article class="project-card" onclick="openProject('${escapeAttr(server.targetName)}')">
+        <div class="card-top"><div><div class="project-title">${escapeHtml(server.name)}</div><div class="subtle">${escapeHtml(server.targetName)}</div></div><span class="pill ${escapeAttr(server.runtimeStatus)}">${escapeHtml(server.runtimeStatus)}</span></div>
+        <div class="project-meta"><span class="pill">${escapeHtml(server.minecraftVersion)}</span><span class="pill">${escapeHtml(server.loader)}</span><span class="pill ${escapeAttr(server.compatibilityLevel)}">${escapeHtml(server.compatibilityLevel)}</span></div>
+        <div class="addr">${escapeHtml(server.connectAddress)}</div>
+        <div class="card-actions">
+          <button class="primary" onclick="event.stopPropagation(); runAction(() => startServer('${escapeAttr(server.targetName)}'))">启动</button>
+          <button class="secondary" onclick="event.stopPropagation(); openProject('${escapeAttr(server.targetName)}')">详情</button>
+          <button class="danger" onclick="event.stopPropagation(); runAction(() => stopServer('${escapeAttr(server.targetName)}'))">停止</button>
+          <button class="danger" onclick="event.stopPropagation(); runAction(() => deleteProject('${escapeAttr(server.targetName)}'))">删除</button>
+        </div>
+      </article>`;
+    }
+
+    function openProject(targetName) {
+      state.selected = state.servers.find((server) => server.targetName === targetName);
+      if (!state.selected) return;
+      state.selectedPlayer = "";
+      $("homeView").classList.add("hidden");
+      $("detailView").classList.remove("hidden");
+      setTab("status");
+      renderDetail();
+    }
+
+    function renderDetail() {
+      const server = state.selected;
+      if (!server) return;
+      $("detailTitle").textContent = server.name;
+      $("detailMeta").textContent = `${server.targetName} / ${server.connectAddress}`;
+      $("detailStatus").textContent = server.runtimeStatus;
+      $("detailStatus").className = `pill ${server.runtimeStatus}`;
+      $("detailBadges").innerHTML = `<span class="pill">${escapeHtml(server.minecraftVersion)}</span><span class="pill">${escapeHtml(server.loader)}</span><span class="pill ${escapeAttr(server.compatibilityLevel)}">${escapeHtml(server.compatibilityLevel)}</span><span class="pill">人工项 ${escapeHtml(server.manualActions)}</span>`;
+      $("detailPath").textContent = server.target;
+    }
+
+    async function startServer(targetName) {
+      const payload = await api("/api/servers/start", { method: "POST", body: JSON.stringify({ targetName }) });
+      toast(`已发送启动命令：${payload.server.connectAddress}`);
+      await refresh();
+      await refreshVisibleTab();
+    }
+
+    async function stopServer(targetName) {
+      await api("/api/servers/stop", { method: "POST", body: JSON.stringify({ targetName }) });
+      toast("已发送停止命令");
+      await refresh();
+      await refreshVisibleTab();
+    }
+
+    async function deleteProject(targetName, displayName = "") {
+      const server = state.servers.find((item) => item.targetName === targetName);
+      const label = displayName || server?.name || targetName;
+      if (!confirm(`确定删除项目“${label}”？这会停止服务器并删除整个项目目录。`)) return;
+      await api("/api/servers/delete", { method: "POST", body: JSON.stringify({ targetName }) });
+      toast(`已删除项目：${label}`);
+      if (state.selected?.targetName === targetName) {
+        $("detailView").classList.add("hidden");
+        $("homeView").classList.remove("hidden");
+        state.selected = null;
+      }
+      await refresh();
+    }
+
+    async function refreshMetrics() {
+      if (!state.selected || state.tab !== "status") return;
+      const payload = await api(`/api/servers/metrics?targetName=${encodeURIComponent(state.selected.targetName)}`);
+      const metrics = payload.metrics;
+      $("metricsGrid").innerHTML = [
+        metricCard("连接地址", metrics.runtime.connectAddress),
+        metricCard("运行状态", metrics.runtime.runtimeStatus),
+        metricCard("运行时长", formatDuration(metrics.runtime.uptimeSeconds || 0)),
+        metricCard("世界时间", metrics.world.gameTime ?? "未知"),
+        metricCard("已过日夜", metrics.world.days ?? "未知"),
+        metricCard("世界大小", formatBytes(metrics.world.sizeBytes)),
+        metricCard("项目占用", formatBytes(metrics.resources.projectSizeBytes)),
+        metricCard("内存占用", formatBytes(metrics.resources.memoryBytes))
+      ].join("");
+    }
+
+    function metricCard(label, value) {
+      return `<div class="mini-card"><span class="subtle">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+    }
+
+    async function refreshLogs() {
+      if (!state.selected || state.tab !== "logs") return;
+      const payload = await api(`/api/servers/logs?targetName=${encodeURIComponent(state.selected.targetName)}&maxLines=500`);
+      $("logBody").textContent = payload.log.lines.join("\n") || "暂无日志。";
+      $("logBody").scrollTop = $("logBody").scrollHeight;
+    }
+
+    async function sendCommand() {
+      if (!state.selected) return;
+      const command = $("consoleCommand").value.trim();
+      if (!command) return;
+      await api("/api/servers/command", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, command }) });
+      $("consoleCommand").value = "";
+      $("commandSuggestions").classList.add("hidden");
+      toast(`已发送指令：${command}`);
+      await refreshLogs();
+    }
+
+    async function refreshCommandSuggestions() {
+      if (!state.selected) return;
+      const prefix = $("consoleCommand").value;
+      const payload = await api(`/api/servers/command-suggestions?targetName=${encodeURIComponent(state.selected.targetName)}&prefix=${encodeURIComponent(prefix)}`);
+      const suggestions = payload.suggestions.suggestions;
+      $("commandSuggestions").innerHTML = suggestions.slice(0, 8).map((item) => `<div class="suggestion" onclick="chooseCommand('${escapeAttr(item)}')">${escapeHtml(item)}</div>`).join("");
+      $("commandSuggestions").classList.toggle("hidden", suggestions.length === 0 || !prefix.trim());
+    }
+
+    function chooseCommand(command) {
+      $("consoleCommand").value = command;
+      $("commandSuggestions").classList.add("hidden");
+      $("consoleCommand").focus();
+    }
+
+    async function loadProperties() {
+      if (!state.selected) return;
+      const payload = await api(`/api/servers/properties?targetName=${encodeURIComponent(state.selected.targetName)}`);
+      const props = payload.serverProperties.properties;
+      $("propertiesEditor").value = Object.keys(props).sort().map((key) => `${key}=${props[key]}`).join("\n");
+      await loadKeySettings();
+    }
+
+    async function loadKeySettings() {
+      const payload = await api(`/api/servers/key-settings?targetName=${encodeURIComponent(state.selected.targetName)}`);
+      $("keySettings").innerHTML = Object.entries(payload.keySettings.settings).map(([key, setting]) => settingInput(key, setting)).join("");
+    }
+
+    function settingInput(key, setting) {
+      if (setting.type === "boolean") return `<label>${escapeHtml(setting.label)}<select data-setting="${escapeAttr(key)}"><option value="true" ${setting.value === "true" ? "selected" : ""}>开启</option><option value="false" ${setting.value === "false" ? "selected" : ""}>关闭</option></select></label>`;
+      if (setting.type === "select") return `<label>${escapeHtml(setting.label)}<select data-setting="${escapeAttr(key)}">${setting.options.map((option) => `<option value="${escapeAttr(option)}" ${setting.value === option ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}</select></label>`;
+      return `<label>${escapeHtml(setting.label)}<input data-setting="${escapeAttr(key)}" type="${setting.type === "number" ? "number" : "text"}" value="${escapeAttr(setting.value)}"></label>`;
+    }
+
+    async function saveKeySettings() {
+      const settings = {};
+      document.querySelectorAll("[data-setting]").forEach((input) => settings[input.dataset.setting] = input.value);
+      await api("/api/servers/key-settings", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, settings }) });
+      toast("常用参数已保存");
+      await loadProperties();
+      await refresh();
+    }
+
+    async function saveProperties() {
+      const properties = {};
+      $("propertiesEditor").value.split(/\r?\n/).forEach((line) => {
+        const clean = line.trim();
+        if (!clean || clean.startsWith("#") || !clean.includes("=")) return;
+        const index = clean.indexOf("=");
+        properties[clean.slice(0, index).trim()] = clean.slice(index + 1).trim();
+      });
+      await api("/api/servers/properties", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, properties }) });
+      toast("server.properties 已保存");
+      await loadKeySettings();
+      await refresh();
+    }
+
+    async function refreshPlayers() {
+      if (!state.selected || state.tab !== "players") return;
+      const payload = await api(`/api/servers/players?targetName=${encodeURIComponent(state.selected.targetName)}`);
+      state.players = payload.players.players;
+      $("playersList").innerHTML = state.players.map(playerRow).join("") || `<div class="subtle">当前没有从日志中识别到在线玩家。启动服务器并让玩家进入后，列表会定时刷新。</div>`;
+      renderPlayerDetail();
+    }
+
+    function playerRow(player) {
+      const position = player.position ? `${player.position.x}, ${player.position.y}, ${player.position.z}` : "坐标未知";
+      const active = state.selectedPlayer === player.name ? " active" : "";
+      return `<div class="player-row${active}" onclick="selectPlayer('${escapeAttr(player.name)}')"><strong>${escapeHtml(player.name)}</strong><span class="subtle">${escapeHtml(player.gameMode)} / ${escapeHtml(position)}</span></div>`;
+    }
+
+    function selectPlayer(name) {
+      state.selectedPlayer = name;
+      renderPlayerDetail();
+      runAction(() => playerAction("probe", { player: name }));
+    }
+
+    function renderPlayerDetail() {
+      const player = state.players.find((item) => item.name === state.selectedPlayer);
+      if (!player) {
+        $("playerDetail").innerHTML = `<div class="subtle">点击玩家查看位置、朝向、复活点、皮肤和管理操作。</div>`;
+        return;
+      }
+      const pos = player.position ? `${player.position.x}, ${player.position.y}, ${player.position.z}` : "等待探测";
+      const rot = player.rotation ? `${player.rotation.yaw}, ${player.rotation.pitch}` : "等待探测";
+      $("playerDetail").innerHTML = `
+        <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3>${escapeHtml(player.name)}</h3><div class="subtle">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
+        <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("复活点", player.respawnPoint || "需要探针")}${metricCard("背包", player.inventory?.length ? `${player.inventory.length} 项` : "需要探针")}</div>
+        <div class="card-actions">
+          <button class="secondary" onclick="runAction(() => playerAction('probe', { player: '${escapeAttr(player.name)}' }))">刷新状态</button>
+          <button class="primary" onclick="runAction(() => playerAction('op', { player: '${escapeAttr(player.name)}' }))">设为 OP</button>
+          <button class="secondary" onclick="changeGameMode('${escapeAttr(player.name)}')">改模式</button>
+          <button class="secondary" onclick="teleportPlayer('${escapeAttr(player.name)}')">TP</button>
+          <button class="danger" onclick="runAction(() => playerAction('ban', { player: '${escapeAttr(player.name)}', reason: prompt('封禁原因', '') || '' }))">封禁</button>
+          <button class="danger" onclick="runAction(() => playerAction('kill', { player: '${escapeAttr(player.name)}' }))">杀死</button>
+          <button class="danger" onclick="runAction(() => playerAction('clear', { player: '${escapeAttr(player.name)}' }))">清空背包</button>
+        </div>`;
+    }
+
+    async function playerAction(action, args) {
+      await api("/api/servers/player-action", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, action, args }) });
+      toast("玩家指令已发送");
+      await refreshLogs();
+      await refreshPlayers();
+    }
+
+    function changeGameMode(player) {
+      const gameMode = prompt("输入游戏模式：survival / creative / adventure / spectator", "survival");
+      if (gameMode) runAction(() => playerAction("gamemode", { player, gameMode }));
+    }
+
+    function teleportPlayer(player) {
+      const raw = prompt("输入坐标：x y z", "0 80 0");
+      if (!raw) return;
+      const [x, y, z] = raw.trim().split(/\s+/);
+      runAction(() => playerAction("tp", { player, x, y, z }));
+    }
+
+    async function loadMods() {
+      if (!state.selected || state.tab !== "mods") return;
+      const payload = await api(`/api/servers/mods?targetName=${encodeURIComponent(state.selected.targetName)}`);
+      $("modsList").innerHTML = payload.mods.mods.map(modRow).join("") || `<div class="subtle">当前项目没有识别到 mods 目录中的 .jar 文件。</div>`;
+    }
+
+    function modRow(mod) {
+      const icon = mod.iconDataUrl ? `<img class="mod-icon" src="${escapeAttr(mod.iconDataUrl)}" alt="">` : `<div class="mod-icon"></div>`;
+      return `<div class="mod-row">${icon}<div><strong>${escapeHtml(mod.title)}</strong><div class="subtle">${escapeHtml(mod.fileName)} / ${escapeHtml(mod.status)}</div></div><div class="card-actions">${mod.enabled ? `<button class="secondary" onclick="runAction(() => disableMod('${escapeAttr(mod.fileName)}'))">禁用</button>` : ""}<button class="danger" onclick="runAction(() => deleteMod('${escapeAttr(mod.fileName)}'))">删除</button></div></div>`;
+    }
+
+    async function addMod() {
+      const file = $("modFile").files[0];
+      if (!file) throw new Error("请选择 .jar 模组文件。");
+      const form = new FormData();
+      form.append("targetName", state.selected.targetName);
+      form.append("modFile", file);
+      await api("/api/servers/mods/upload", { method: "POST", body: form });
+      $("modFile").value = "";
+      toast("模组已添加，重启服务器后生效");
+      await loadMods();
+    }
+
+    async function disableMod(fileName) {
+      await api("/api/servers/mods/disable", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, fileName }) });
+      toast("模组已禁用，重启服务器后生效");
+      await loadMods();
+    }
+
+    async function deleteMod(fileName) {
+      if (!confirm(`确定删除模组文件 ${fileName}？`)) return;
+      await api("/api/servers/mods/delete", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, fileName }) });
+      toast("模组已删除，重启服务器后生效");
+      await loadMods();
+    }
+
+    function setTab(tab) {
+      state.tab = tab;
+      document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
+      ["Status", "Logs", "Properties", "Players", "Mods"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", tab !== name.toLowerCase()));
+      refreshVisibleTab();
+    }
+
+    async function refreshVisibleTab() {
+      if (state.tab === "status") await refreshMetrics();
+      if (state.tab === "logs") await refreshLogs();
+      if (state.tab === "properties") await loadProperties();
+      if (state.tab === "players") await refreshPlayers();
+      if (state.tab === "mods") await loadMods();
+    }
+
+    function updateCreateButton() { $("createProject").disabled = !$("download").checked || !$("acceptEula").checked; }
+
+    async function createProject(event) {
+      event.preventDefault();
+      if (!$("download").checked || !$("acceptEula").checked) return toast("请勾选 EULA 和自动下载后再创建。");
+      const file = $("packFile").files[0];
+      if (!file) return toast("请先选择 .mrpack 或 .zip 整合包文件。");
+      const form = new FormData();
+      form.append("packFile", file);
+      form.append("projectName", $("projectName").value.trim());
+      form.append("download", $("download").checked ? "true" : "false");
+      form.append("acceptEula", $("acceptEula").checked ? "true" : "false");
+      const payload = await api("/api/projects/upload", { method: "POST", body: form });
+      $("createDialog").close();
+      $("packFile").value = "";
+      watchJob(payload.job.jobId);
+      toast("项目创建任务已开始");
+    }
+
+    function watchJob(jobId) {
+      state.jobId = jobId;
+      $("activeJob").classList.remove("hidden");
+      if (state.jobTimer) clearInterval(state.jobTimer);
+      pollJob();
+      state.jobTimer = setInterval(pollJob, 1200);
+    }
+
+    async function pollJob() {
+      if (!state.jobId) return;
+      const payload = await api(`/api/projects/jobs?jobId=${encodeURIComponent(state.jobId)}`);
+      const job = payload.job;
+      $("jobTitle").textContent = `正在创建 ${job.targetName}`;
+      $("jobMessage").textContent = job.message;
+      $("jobStage").textContent = job.stage;
+      $("jobFill").style.width = `${job.progress}%`;
+      document.querySelectorAll(".stage").forEach((stage) => stage.classList.toggle("current", stage.dataset.stage === job.stage));
+      if (job.status === "completed" || job.status === "failed") {
+        clearInterval(state.jobTimer);
+        state.jobTimer = null;
+        toast(job.status === "completed" ? "项目创建成功" : `项目创建失败：${job.error || job.message}`);
+        await refresh();
+        if (job.status === "completed" && job.server) openProject(job.server.targetName);
+      }
+    }
+
+    function formatBytes(value) {
+      if (value === null || value === undefined) return "未知";
+      const units = ["B", "KB", "MB", "GB"];
+      let size = Number(value);
+      let index = 0;
+      while (size >= 1024 && index < units.length - 1) { size /= 1024; index += 1; }
+      return `${size.toFixed(index ? 1 : 0)} ${units[index]}`;
+    }
+
+    function formatDuration(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      return h ? `${h}h ${m}m` : `${m}m ${s}s`;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    }
+
+    function escapeAttr(value) {
+      return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    }
+
+    $("openCreate").onclick = () => $("createDialog").showModal();
+    $("createProject").onclick = (event) => runAction(() => createProject(event));
+    $("download").onchange = updateCreateButton;
+    $("acceptEula").onchange = updateCreateButton;
+    $("refresh").onclick = () => runAction(refresh);
+    $("showInternalProjects").onchange = () => { state.showInternal = $("showInternalProjects").checked; runAction(refresh); };
+    $("backHome").onclick = () => { $("detailView").classList.add("hidden"); $("homeView").classList.remove("hidden"); state.selected = null; };
+    $("detailStart").onclick = () => state.selected && runAction(() => startServer(state.selected.targetName));
+    $("detailStop").onclick = () => state.selected && runAction(() => stopServer(state.selected.targetName));
+    $("detailDelete").onclick = () => state.selected && runAction(() => deleteProject(state.selected.targetName, state.selected.name));
+    $("sendCommand").onclick = () => runAction(sendCommand);
+    $("saveProperties").onclick = () => runAction(saveProperties);
+    $("saveKeySettings").onclick = () => runAction(saveKeySettings);
+    $("addMod").onclick = () => runAction(addMod);
+    $("consoleCommand").addEventListener("input", () => refreshCommandSuggestions().catch(() => {}));
+    $("consoleCommand").addEventListener("keydown", (event) => { if (event.key === "Enter") runAction(sendCommand); if (event.key === "Escape") $("commandSuggestions").classList.add("hidden"); });
+    document.querySelectorAll(".tab").forEach((button) => button.onclick = () => setTab(button.dataset.tab));
+    setInterval(() => refresh().catch(() => {}), 5000);
+    setInterval(() => refreshMetrics().catch(() => {}), 4000);
+    setInterval(() => refreshLogs().catch(() => {}), 2000);
+    setInterval(() => refreshPlayers().catch(() => {}), 3000);
+    setInterval(() => loadMods().catch(() => {}), 8000);
+    updateCreateButton();
+    refresh().catch((error) => toast(error.message));
+  </script>
+  <script type="application/json" id="legacyPanelScript">
     const $ = (id) => document.getElementById(id);
     const state = { servers: [], selected: null, tab: "logs", jobId: "", jobTimer: null, showInternal: false };
 
