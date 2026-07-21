@@ -24,7 +24,7 @@ from pack2serve.java import (
 )
 from pack2serve.loader import LoaderInstallPlan, create_loader_install_plan
 from pack2serve.installer import LoaderInstaller, ensure_start_script_uses_nogui
-from pack2serve.panel import PanelService, ProjectJob
+from pack2serve.panel import PanelService, ProjectJob, RunningServer
 from pack2serve.parser import ModpackFormat, parse_modpack
 from pack2serve.validator import ServerValidator
 from pack2serve.web import (
@@ -1757,6 +1757,33 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(players["players"][0]["rotation"], {"yaw": 180.0, "pitch": 20.0})
             self.assertEqual(metrics["world"]["gameTime"], 49000)
             self.assertEqual(metrics["world"]["days"], 2)
+
+    def test_panel_service_auto_probes_online_players_with_throttle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            (server_dir / "server.properties").write_text("server-port=25565\n", encoding="utf-8")
+            (server_dir / "logs/panel-server.log").write_text(
+                "[Server thread/INFO]: Alice joined the game\n",
+                encoding="utf-8",
+            )
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            process = Mock()
+            process.poll.return_value = None
+            process.stdin = Mock()
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            service._running["sample-server"] = RunningServer(process=process, status="running", log_path=server_dir / "logs/panel-server.log")
+
+            with patch.object(service, "send_console_command") as send:
+                service.server_players("sample-server")
+                service.server_players("sample-server")
+
+            send.assert_any_call("sample-server", "data get entity Alice Pos")
+            send.assert_any_call("sample-server", "data get entity Alice Rotation")
+            self.assertEqual(send.call_count, 2)
 
     def test_panel_service_lists_and_manages_mod_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

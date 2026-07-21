@@ -75,6 +75,7 @@ class PanelService:
         self.advertise_host = advertise_host or "127.0.0.1"
         self._running: dict[str, RunningServer] = {}
         self._jobs: dict[str, ProjectJob] = {}
+        self._player_probe_at: dict[tuple[str, str], float] = {}
         self._lock = threading.RLock()
 
     def import_pack(
@@ -509,6 +510,7 @@ class PanelService:
         server_dir = self._server_dir(target_name)
         log_path = server_dir / "logs" / "panel-server.log"
         players = _players_from_log(log_path)
+        self._auto_probe_online_players(target_name, players)
         return {
             "targetName": target_name,
             "players": list(players.values()),
@@ -520,6 +522,25 @@ class PanelService:
                 "note": "玩家状态先从控制台日志与探测命令推断；完整背包与模组命令树需要服务端管理探针或 RCON 扩展。",
             },
         }
+
+    def _auto_probe_online_players(self, target_name: str, players: dict[str, dict[str, object]]) -> None:
+        if not players:
+            return
+        with self._lock:
+            running = self._running.get(target_name)
+            if not running or running.process.poll() is not None or not running.process.stdin:
+                return
+        now = time.monotonic()
+        for player in sorted(players):
+            key = (target_name, player)
+            if now - self._player_probe_at.get(key, 0) < 2.8:
+                continue
+            self._player_probe_at[key] = now
+            for command in (f"data get entity {player} Pos", f"data get entity {player} Rotation"):
+                try:
+                    self.send_console_command(target_name, command)
+                except ValueError:
+                    return
 
     def server_metrics(self, target_name: str) -> dict[str, object]:
         server_dir = self._server_dir(target_name)

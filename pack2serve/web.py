@@ -1204,7 +1204,7 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     function playerRow(player) {
-      const position = player.position ? `${player.position.x}, ${player.position.y}, ${player.position.z}` : "坐标未知";
+      const position = formatVector(player.position, "坐标未知");
       const active = state.selectedPlayer === player.name ? " active" : "";
       return `<div class="player-row${active}" onclick="selectPlayer('${escapeAttr(player.name)}')"><strong>${escapeHtml(player.name)}</strong><span class="subtle">${escapeHtml(player.gameMode)} / ${escapeHtml(position)}</span></div>`;
     }
@@ -1221,8 +1221,8 @@ PANEL_HTML = r"""<!doctype html>
         $("playerDetail").innerHTML = `<div class="subtle">点击玩家查看位置、朝向、复活点、皮肤和管理操作。</div>`;
         return;
       }
-      const pos = player.position ? `${player.position.x}, ${player.position.y}, ${player.position.z}` : "等待探测";
-      const rot = player.rotation ? `${player.rotation.yaw}, ${player.rotation.pitch}` : "等待探测";
+      const pos = formatVector(player.position, "等待探测");
+      const rot = formatRotation(player.rotation, "等待探测");
       $("playerDetail").innerHTML = `
         <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3>${escapeHtml(player.name)}</h3><div class="subtle">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
         <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("复活点", player.respawnPoint || "需要探针")}${metricCard("背包", player.inventory?.length ? `${player.inventory.length} 项` : "需要探针")}</div>
@@ -1235,6 +1235,21 @@ PANEL_HTML = r"""<!doctype html>
           <button class="danger" onclick="runAction(() => playerAction('kill', { player: '${escapeAttr(player.name)}' }))">杀死</button>
           <button class="danger" onclick="runAction(() => playerAction('clear', { player: '${escapeAttr(player.name)}' }))">清空背包</button>
         </div>`;
+    }
+
+    function formatCoordinate(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(1) : "未知";
+    }
+
+    function formatVector(position, fallback) {
+      if (!position) return fallback;
+      return `${formatCoordinate(position.x)}, ${formatCoordinate(position.y)}, ${formatCoordinate(position.z)}`;
+    }
+
+    function formatRotation(rotation, fallback) {
+      if (!rotation) return fallback;
+      return `${formatCoordinate(rotation.yaw)}, ${formatCoordinate(rotation.pitch)}`;
     }
 
     async function playerAction(action, args) {
@@ -1851,7 +1866,7 @@ PANEL_HTML = r"""<!doctype html>
     document.querySelectorAll(".tab").forEach((button) => button.onclick = () => setTab(button.dataset.tab));
     setInterval(() => refresh().catch(() => {}), 5000);
     setInterval(() => refreshLogs().catch(() => {}), 2000);
-    setInterval(() => refreshPlayers().catch(() => {}), 4000);
+    setInterval(() => refreshPlayers().catch(() => {}), 3000);
     updateCreateButton();
     refresh().catch((error) => toast(error.message));
   </script>
