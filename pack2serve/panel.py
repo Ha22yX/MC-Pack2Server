@@ -101,6 +101,8 @@ class PanelService:
     ) -> dict[str, object]:
         if not accept_eula:
             raise ValueError("You must accept the Minecraft EULA before creating a runnable server project.")
+        if not download:
+            raise ValueError("You must enable automatic remote file downloads before creating a runnable server project.")
         target_name = _slugify(project_name or Path(pack_path).stem)
         job = ProjectJob(id=uuid.uuid4().hex, target_name=target_name)
         with self._lock:

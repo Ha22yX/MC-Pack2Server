@@ -603,7 +603,7 @@ PANEL_HTML = r"""<!doctype html>
       </div>
       <div class="modal-actions">
         <button class="secondary" value="cancel">取消</button>
-        <button class="primary" id="createProject" value="default">创建</button>
+        <button class="primary" id="createProject" value="default" disabled>创建</button>
       </div>
     </form>
   </dialog>
@@ -816,9 +816,16 @@ PANEL_HTML = r"""<!doctype html>
       if (tab === "players") refreshPlayers();
     }
 
+    function updateCreateButton() {
+      $("createProject").disabled = !$("download").checked || !$("acceptEula").checked;
+    }
+
     async function createProject(event) {
       event.preventDefault();
       try {
+        if (!$("download").checked || !$("acceptEula").checked) {
+          throw new Error("请同时勾选自动下载远程模组文件和 Minecraft EULA 后再创建。");
+        }
         const file = $("packFile").files[0];
         if (!file) throw new Error("请先选择 .mrpack 或 .zip 整合包文件。");
         const form = new FormData();
@@ -879,6 +886,8 @@ PANEL_HTML = r"""<!doctype html>
 
     $("openCreate").onclick = () => $("createDialog").showModal();
     $("createProject").onclick = createProject;
+    $("download").onchange = updateCreateButton;
+    $("acceptEula").onchange = updateCreateButton;
     $("refresh").onclick = refresh;
     $("showInternalProjects").onchange = () => {
       state.showInternal = $("showInternalProjects").checked;
@@ -901,6 +910,7 @@ PANEL_HTML = r"""<!doctype html>
     setInterval(() => refresh().catch(() => {}), 5000);
     setInterval(() => refreshLogs().catch(() => {}), 2000);
     setInterval(() => refreshPlayers().catch(() => {}), 4000);
+    updateCreateButton();
     refresh().catch((error) => toast(error.message));
   </script>
 </body>

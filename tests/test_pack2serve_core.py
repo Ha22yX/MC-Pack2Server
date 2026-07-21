@@ -904,7 +904,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
             ) as installer_class, patch("pack2serve.panel._is_port_available", return_value=True):
                 java_installer_class.return_value.install.side_effect = install_java
                 installer_class.return_value.install.side_effect = install_loader
-                job = service.create_project(pack, project_name="Job Server", accept_eula=True, download=False)
+                job = service.create_project(pack, project_name="Job Server", accept_eula=True, download=True)
                 deadline = time.time() + 10
                 current = service.project_job(job["jobId"])
                 while current["status"] in {"queued", "running"} and time.time() < deadline:
@@ -926,6 +926,32 @@ class Pack2ServeCoreTests(unittest.TestCase):
                 self.assertTrue((tmp_path / "workspace/servers/job-server/pack2serve/runtime/java/bin/java.exe").exists())
                 java_installer_class.return_value.install.assert_called_once()
                 installer_class.return_value.install.assert_called_once()
+
+    def test_panel_service_create_project_requires_download_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.mrpack"
+            write_zip(
+                pack,
+                {
+                    "modrinth.index.json": json.dumps(
+                        {
+                            "formatVersion": 1,
+                            "game": "minecraft",
+                            "name": "Job Sample",
+                            "versionId": "1.0.0",
+                            "dependencies": {"minecraft": "1.20.1", "fabric-loader": "0.18.4"},
+                            "files": [],
+                        }
+                    ),
+                },
+            )
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+
+            with self.assertRaises(ValueError) as raised:
+                service.create_project(pack, project_name="Job Server", accept_eula=True, download=False)
+
+            self.assertIn("automatic remote file downloads", str(raised.exception))
 
     def test_panel_service_reads_players_from_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -986,6 +1012,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('id="showInternalProjects"', PANEL_HTML)
         self.assertIn('id="detailDelete"', PANEL_HTML)
         self.assertIn('id="packFile"', PANEL_HTML)
+        self.assertIn("updateCreateButton", PANEL_HTML)
         self.assertIn('type="file"', PANEL_HTML)
         self.assertIn("/api/projects/upload", PANEL_HTML)
         self.assertIn("/api/servers/delete", PANEL_HTML)
