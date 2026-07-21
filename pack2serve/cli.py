@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from pack2serve.builder import ServerBuilder
+from pack2serve.compatibility import audit_generated_server
 from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, default_curseforge_providers
 from pack2serve.eula import accept_eula
 from pack2serve.installer import LoaderInstaller, load_loader_plan
@@ -70,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     validate_parser.add_argument("server_dir", type=Path)
     validate_parser.add_argument("--timeout", type=int, default=120)
     validate_parser.add_argument("--command", dest="validation_command", nargs="+")
+
+    audit_parser = subcommands.add_parser(
+        "audit-server", help="Write and print the compatibility audit for a generated server"
+    )
+    audit_parser.add_argument("server_dir", type=Path)
 
     prepare_existing_parser = subcommands.add_parser(
         "prepare-existing", help="Install loader and optionally validate an existing generated server"
@@ -215,6 +221,11 @@ def main(argv: list[str] | None = None) -> int:
             timeout_seconds=args.timeout,
         )
         print(json.dumps(result.to_json_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "audit-server":
+        result = audit_generated_server(args.server_dir)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "prepare-existing":

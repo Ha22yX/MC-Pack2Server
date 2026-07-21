@@ -7,6 +7,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from pack2serve.compatibility import audit_generated_server
+
 
 @dataclass(frozen=True)
 class ValidationResult:
@@ -33,6 +35,8 @@ class ServerValidator:
         cmd = command or _default_command(root)
         result = self._validate_process(root, cmd, timeout_seconds)
         self._write_outputs(root, result)
+        if (root / "pack2serve" / "build-report.json").exists():
+            audit_generated_server(root)
         return result
 
     def _validate_process(self, root: Path, cmd: list[str], timeout_seconds: int) -> ValidationResult:

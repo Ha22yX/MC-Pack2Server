@@ -14,6 +14,7 @@ from pack2serve.downloader import (
     ModrinthDirectProvider,
     copy_cached_artifact,
 )
+from pack2serve.compatibility import audit_generated_server
 from pack2serve.java import create_java_runtime_install_plan, plan_java
 from pack2serve.loader import create_loader_install_plan
 from pack2serve.models import (
@@ -131,6 +132,7 @@ class ServerBuilder:
             curseforge_resolution=curseforge_resolution,
         )
         self._write_project_files(report)
+        audit_generated_server(report.target_dir)
         return report
 
     def _resolve_remote_files(

@@ -231,6 +231,7 @@ class PanelService:
 def _summary_from_report(target_name: str, report: dict[str, object]) -> dict[str, object]:
     pack = report["pack"]
     loader = pack["loader"]
+    compatibility = _read_compatibility_summary(Path(report["target_dir"]))
     return {
         "targetName": target_name,
         "target": report["target_dir"],
@@ -242,6 +243,9 @@ def _summary_from_report(target_name: str, report: dict[str, object]) -> dict[st
         "remoteFiles": len(report["downloads"]),
         "copiedOverrides": len(report["copied_overrides"]),
         "manualActions": len(report["manual_actions"]),
+        "compatibilityLevel": compatibility["level"],
+        "serverEquivalent": compatibility["serverEquivalent"],
+        "compatibilitySummary": compatibility["summary"],
     }
 
 
@@ -288,6 +292,22 @@ def _write_log_line(log: TextIO, line: str) -> None:
 
 def _tail_text_file(path: Path, max_lines: int) -> list[str]:
     return path.read_text(encoding="utf-8", errors="replace").splitlines()[-max_lines:]
+
+
+def _read_compatibility_summary(server_dir: Path) -> dict[str, object]:
+    path = server_dir / "pack2serve" / "compatibility-report.json"
+    if not path.exists():
+        return {
+            "level": "unknown",
+            "serverEquivalent": False,
+            "summary": {},
+        }
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {
+        "level": data.get("level", "unknown"),
+        "serverEquivalent": bool(data.get("serverEquivalent", False)),
+        "summary": data.get("summary", {}),
+    }
 
 
 def _kill_process_tree(proc: subprocess.Popen[str]) -> None:

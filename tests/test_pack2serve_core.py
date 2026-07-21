@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pack2serve.builder import ServerBuilder
 from pack2serve.cli import main
+from pack2serve.compatibility import audit_generated_server
 from pack2serve.downloader import ArtifactCache, CurseForgeTemplateMirrorProvider, ModrinthDirectProvider
 from pack2serve.java import (
     JavaInstaller,
@@ -767,6 +768,75 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('replace(/\\\\/g, "\\\\\\\\")', PANEL_HTML)
         self.assertNotIn("replace(/\\/g, \"\\\\\")", PANEL_HTML)
         self.assertIn('split(/\\\\r?\\\\n/)', PANEL_HTML)
+
+    def test_compatibility_audit_requires_startup_validation_for_equivalence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            report = audit_generated_server(server_dir)
+
+            self.assertEqual(report["level"], "generated-not-validated")
+            self.assertFalse(report["serverEquivalent"])
+            self.assertTrue(any(check["id"] == "startup-validation" for check in report["checks"]))
+
+    def test_compatibility_audit_marks_unknown_overrides_as_difference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            build_path = server_dir / "pack2serve/build-report.json"
+            data = json.loads(build_path.read_text(encoding="utf-8"))
+            data["copied_overrides"].append(
+                {
+                    "source": "overrides/unknown/file.txt",
+                    "destination": "_unknown-overrides/file.txt",
+                    "classification": "unknown-isolated",
+                    "size": 10,
+                }
+            )
+            build_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            (server_dir / "pack2serve/validation-report.json").write_text(
+                json.dumps(
+                    {
+                        "status": "started",
+                        "command": ["fake"],
+                        "return_code": None,
+                        "timed_out": False,
+                        "combined_output": "Done (0.1s)! For help, type help",
+                        "hints": [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            report = audit_generated_server(server_dir)
+
+            self.assertEqual(report["level"], "startable-with-differences")
+            self.assertFalse(report["serverEquivalent"])
+            unknown = next(check for check in report["checks"] if check["id"] == "unknown-overrides")
+            self.assertEqual(unknown["status"], "warning")
+
+    def test_cli_audit_server_prints_compatibility_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                code = main(["audit-server", str(server_dir)])
+
+            self.assertEqual(code, 0)
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["level"], "generated-not-validated")
+            self.assertTrue((server_dir / "pack2serve/compatibility-report.json").exists())
 
     def test_curseforge_template_mirror_downloads_project_file_pair(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

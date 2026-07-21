@@ -304,6 +304,7 @@ PANEL_HTML = r"""<!doctype html>
             <th>版本</th>
             <th>Loader</th>
             <th>连接地址</th>
+            <th>兼容性</th>
             <th>状态</th>
             <th>操作</th>
           </tr>
@@ -343,6 +344,9 @@ PANEL_HTML = r"""<!doctype html>
           <td>${server.loader}</td>
           <td><span class="addr">${server.connectAddress}</span></td>
           <td>
+            <span class="status-pill ${server.serverEquivalent ? "running" : "starting"}">${server.compatibilityLevel}</span>
+          </td>
+          <td>
             <span class="status-pill ${server.runtimeStatus}">${server.runtimeStatus}</span>
             ${server.pid ? `<div>PID ${server.pid}</div>` : ""}
           </td>
@@ -354,7 +358,7 @@ PANEL_HTML = r"""<!doctype html>
             </div>
           </td>
         </tr>
-      `).join("") || `<tr><td colspan="7">没有找到 startup-verification-2026-07-21 这批测试服务端。</td></tr>`;
+      `).join("") || `<tr><td colspan="8">没有找到 startup-verification-2026-07-21 这批测试服务端。</td></tr>`;
     }
     function escapeAttr(value) {
       return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
