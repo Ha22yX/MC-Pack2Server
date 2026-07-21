@@ -1,99 +1,74 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="420" viewBox="0 0 1120 420" role="img" aria-labelledby="title desc">
-  <title id="title">Pack2Serve README overview</title>
-  <desc id="desc">A wide product overview image showing Pack2Serve as a local Minecraft modpack to server panel.</desc>
+  <title id="title">Pack2Serve project overview</title>
+  <desc id="desc">Pack2Serve overview in the same first-screen card style as the other GitHub repositories.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#eef8f4"/>
-      <stop offset="0.55" stop-color="#f8fbf7"/>
-      <stop offset="1" stop-color="#f2ecff"/>
+      <stop offset="0" stop-color="#f6fbf7"/>
+      <stop offset="0.56" stop-color="#fbfbf5"/>
+      <stop offset="1" stop-color="#eef8f3"/>
     </linearGradient>
-    <linearGradient id="dark" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#10231d"/>
-      <stop offset="1" stop-color="#17233d"/>
-    </linearGradient>
-    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#f8fbf9"/>
-    </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#123128" flood-opacity="0.16"/>
-    </filter>
-    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#18283a" flood-opacity="0.10"/>
+    <filter id="shadow" x="-20%" y="-25%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#18362d" flood-opacity="0.14"/>
     </filter>
   </defs>
 
   <rect width="1120" height="420" rx="34" fill="url(#bg)"/>
-  <path d="M0 315 C130 270 240 338 388 300 C560 256 668 130 835 154 C964 172 1034 260 1120 218 L1120 420 L0 420 Z" fill="#dff3eb" opacity="0.86"/>
-  <path d="M820 0 C780 72 818 128 900 145 C992 164 1044 114 1120 152 L1120 0 Z" fill="#e9e4ff" opacity="0.78"/>
+  <path d="M0 314 C150 260 282 300 430 258 C606 207 720 178 882 211 C980 231 1054 279 1120 255 L1120 420 L0 420 Z" fill="#dceee8" opacity="0.88"/>
+  <path d="M58 82 C194 46 332 52 464 74 C590 95 726 97 850 67 C946 44 1030 48 1080 72" fill="none" stroke="#e7d5c7" stroke-width="2" opacity="0.9"/>
 
-  <rect x="58" y="46" width="1004" height="328" rx="30" fill="#ffffff" filter="url(#shadow)"/>
+  <rect x="68" y="58" width="984" height="284" rx="28" fill="#ffffff" filter="url(#shadow)"/>
 
-  <g transform="translate(96 82)">
-    <text x="0" y="28" font-family="Segoe UI, Arial, sans-serif" font-size="31" font-weight="800" fill="#17231f">Pack2Serve</text>
-    <text x="0" y="57" font-family="Segoe UI, Arial, sans-serif" font-size="16" fill="#5d716a">Turn Minecraft modpacks into local dedicated server projects.</text>
-
-    <g transform="translate(0 86)">
-      <rect width="428" height="212" rx="22" fill="url(#dark)" filter="url(#soft)"/>
-      <rect width="428" height="46" rx="22" fill="#0b1714"/>
-      <circle cx="28" cy="23" r="7" fill="#ff7474"/>
-      <circle cx="52" cy="23" r="7" fill="#f0b429"/>
-      <circle cx="76" cy="23" r="7" fill="#45c987"/>
-      <text x="108" y="29" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#d9fff2">local panel · 127.0.0.1:8766</text>
-
-      <rect x="26" y="72" width="112" height="104" rx="16" fill="#152c25" stroke="#25473e"/>
-      <text x="45" y="105" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#8ff0c0">IMPORT</text>
-      <text x="45" y="130" font-family="Segoe UI, Arial, sans-serif" font-size="20" font-weight="800" fill="#ffffff">.mrpack</text>
-      <text x="45" y="153" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#9bc8b7">or CurseForge zip</text>
-
-      <path d="M158 124 H206" stroke="#4d6bff" stroke-width="3" stroke-linecap="round"/>
-      <path d="M198 116 L208 124 L198 132" fill="none" stroke="#4d6bff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-
-      <rect x="226" y="72" width="176" height="104" rx="16" fill="#f5fbf8"/>
-      <text x="248" y="104" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="700" fill="#1f7a64">SERVER READY</text>
-      <text x="248" y="132" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="800" fill="#15231f">start.ps1</text>
-      <text x="248" y="155" font-family="Segoe UI, Arial, sans-serif" font-size="12" fill="#5b7068">mods · eula · logs</text>
-
-      <text x="28" y="199" font-family="Consolas, monospace" font-size="13" fill="#8fb8ff">Fabric / Forge / NeoForge</text>
-      <text x="236" y="199" font-family="Consolas, monospace" font-size="13" fill="#f6d36b">validation-report.json</text>
-    </g>
+  <g transform="translate(94 84)">
+    <rect width="238" height="232" rx="20" fill="#102e24"/>
+    <rect x="28" y="28" width="48" height="48" rx="13" fill="#e8f7f1"/>
+    <path d="M39 43 H65 V61 H39 Z" fill="none" stroke="#258b72" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M40 44 L52 53 L64 44" fill="none" stroke="#258b72" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="28" y="112" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="800" fill="#ffffff">Pack2Serve</text>
+    <text x="28" y="141" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#d7f7ea">Modpack to server</text>
+    <rect x="28" y="173" width="148" height="42" rx="10" fill="#2c9a7b"/>
+    <text x="57" y="199" font-family="Segoe UI, Arial, sans-serif" font-size="13" font-weight="800" fill="#ffffff">Server Flow</text>
+    <rect x="28" y="228" width="110" height="16" rx="8" fill="#b9cac3" opacity="0.9"/>
   </g>
 
-  <g transform="translate(478 96)">
-    <rect x="52" y="28" width="284" height="174" rx="22" fill="#f8faf9" stroke="#ddebe5" filter="url(#soft)"/>
-    <rect x="76" y="55" width="236" height="20" rx="10" fill="#dfeae5"/>
-    <rect x="76" y="92" width="102" height="78" rx="14" fill="#ffffff" stroke="#d9e8e1"/>
-    <rect x="194" y="92" width="92" height="78" rx="14" fill="#ffffff" stroke="#d9e8e1"/>
-    <text x="96" y="123" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#1d302a">Projects</text>
-    <text x="211" y="123" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="700" fill="#1d302a">Runtime</text>
-    <rect x="96" y="142" width="50" height="8" rx="4" fill="#1f7a64"/>
-    <rect x="211" y="142" width="42" height="8" rx="4" fill="#6b7fd7"/>
-
-    <rect x="18" y="98" width="282" height="174" rx="22" fill="#ffffff" stroke="#dfe8e4" filter="url(#soft)"/>
-    <rect x="42" y="125" width="120" height="18" rx="9" fill="#e4eee9"/>
-    <rect x="42" y="160" width="212" height="16" rx="8" fill="#f0f5f2"/>
-    <rect x="42" y="190" width="170" height="16" rx="8" fill="#f0f5f2"/>
-    <rect x="42" y="222" width="88" height="26" rx="13" fill="#1f7a64"/>
-    <text x="61" y="240" font-family="Segoe UI, Arial, sans-serif" font-size="12" font-weight="700" fill="#ffffff">Start</text>
-
-    <rect x="176" y="168" width="246" height="164" rx="20" fill="#101b2f" filter="url(#soft)"/>
-    <text x="200" y="201" font-family="Consolas, monospace" font-size="13" fill="#8ff0c0">[Server thread/INFO]</text>
-    <text x="200" y="228" font-family="Consolas, monospace" font-size="13" fill="#eefaf4">Done. Type /help</text>
-    <text x="200" y="255" font-family="Consolas, monospace" font-size="13" fill="#f6d36b">players: 3 online</text>
-    <rect x="200" y="286" width="170" height="20" rx="10" fill="#1b2f4f"/>
+  <g transform="translate(390 88)">
+    <rect width="176" height="78" rx="16" fill="#fffaf7" stroke="#efd8cc"/>
+    <circle cx="36" cy="39" r="18" fill="#f5e7df"/>
+    <text x="68" y="34" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#4c514d">Input</text>
+    <text x="68" y="58" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="900" fill="#0b1412">MRPACK</text>
   </g>
 
-  <g transform="translate(870 98)">
-    <rect width="148" height="46" rx="16" fill="#f4fbf8" stroke="#cfe6dc"/>
-    <text x="24" y="29" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="800" fill="#1f7a64">Import</text>
-
-    <rect y="66" width="148" height="46" rx="16" fill="#f7f5ff" stroke="#dad2fb"/>
-    <text x="24" y="95" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="800" fill="#5b63bd">Resolve</text>
-
-    <rect y="132" width="148" height="46" rx="16" fill="#fff9e8" stroke="#eedca4"/>
-    <text x="24" y="161" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="800" fill="#8a6515">Validate</text>
-
-    <rect y="198" width="148" height="46" rx="16" fill="#eef7ff" stroke="#c7dff7"/>
-    <text x="24" y="227" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="800" fill="#2f6f9f">Manage</text>
+  <g transform="translate(610 88)">
+    <rect width="176" height="78" rx="16" fill="#fbfbff" stroke="#d9d8f0"/>
+    <circle cx="36" cy="39" r="18" fill="#ececf8"/>
+    <text x="68" y="34" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#4c514d">Loader</text>
+    <text x="68" y="58" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="900" fill="#0b1412">Forge</text>
   </g>
+
+  <g transform="translate(830 88)">
+    <rect width="176" height="78" rx="16" fill="#f8fffc" stroke="#c8e2d9"/>
+    <circle cx="36" cy="39" r="18" fill="#e3f0eb"/>
+    <text x="68" y="34" font-family="Segoe UI, Arial, sans-serif" font-size="13" fill="#4c514d">Runtime</text>
+    <text x="68" y="58" font-family="Segoe UI, Arial, sans-serif" font-size="29" font-weight="900" fill="#0b1412">Java</text>
+  </g>
+
+  <path d="M534 181 C586 222 668 224 717 183" fill="none" stroke="#8d8cd3" stroke-width="3" stroke-dasharray="8 12" stroke-linecap="round"/>
+  <path d="M878 176 C850 222 800 243 742 239" fill="none" stroke="#8d8cd3" stroke-width="3" stroke-dasharray="8 12" stroke-linecap="round"/>
+
+  <g transform="translate(390 218)">
+    <rect width="326" height="86" rx="16" fill="#fbfffd" stroke="#d4e8df"/>
+    <circle cx="32" cy="43" r="6" fill="#268b72"/>
+    <text x="56" y="36" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#0c1715">Generated server</text>
+    <text x="56" y="63" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#4e625b">mods, eula, start scripts</text>
+  </g>
+
+  <path d="M716 261 H786" stroke="#268b72" stroke-width="4" stroke-linecap="round"/>
+  <path d="M776 249 L790 261 L776 273" fill="none" stroke="#268b72" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(812 218)">
+    <rect width="234" height="86" rx="16" fill="#fbfffd" stroke="#d4e8df"/>
+    <text x="28" y="36" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="800" fill="#0c1715">Local panel</text>
+    <text x="28" y="63" font-family="Segoe UI, Arial, sans-serif" font-size="14" fill="#4e625b">logs, players, settings</text>
+  </g>
+
+  <rect x="390" y="322" width="272" height="16" rx="8" fill="#d5e7df"/>
 </svg>
