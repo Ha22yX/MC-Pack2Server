@@ -229,6 +229,44 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(by_uuid["22222222-3333-4444-5555-666666666666"]["name"], "logName")
             self.assertEqual(by_uuid["22222222-3333-4444-5555-666666666666"]["nameSource"], "logs")
 
+    def test_panel_service_hides_offline_player_when_same_player_is_online(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "world/playerdata").mkdir(parents=True)
+            (server_dir / "logs").mkdir()
+            _write_minimal_build_report(server_dir, name="Sample Server")
+            (server_dir / "server.properties").write_text("level-name=world\nserver-port=25565\n", encoding="utf-8")
+            (server_dir / "usercache.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "kicofy",
+                            "uuid": "11111111-2222-3333-4444-555555555555",
+                            "expiresOn": "2026-08-22 03:53:23 +0800",
+                        },
+                        {
+                            "name": "Alex",
+                            "uuid": "22222222-3333-4444-5555-666666666666",
+                            "expiresOn": "2026-08-22 03:53:23 +0800",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (server_dir / "logs/panel-server.log").write_text(
+                "[Server thread/INFO]: kicofy joined the game\n",
+                encoding="utf-8",
+            )
+            write_playerdata_nbt(server_dir / "world/playerdata/11111111-2222-3333-4444-555555555555.dat")
+            write_playerdata_nbt(server_dir / "world/playerdata/22222222-3333-4444-5555-666666666666.dat")
+
+            players = PanelService(tmp_path / "workspace").server_players("sample-server")
+
+            self.assertEqual([player["name"] for player in players["onlinePlayers"]], ["kicofy"])
+            self.assertEqual([player["name"] for player in players["offlinePlayers"]], ["Alex"])
+
     def test_panel_service_reads_offline_player_inventory_with_icons(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)

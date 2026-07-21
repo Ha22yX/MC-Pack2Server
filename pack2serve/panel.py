@@ -520,7 +520,13 @@ class PanelService:
         players = _players_from_log(log_path)
         self._auto_probe_online_players(target_name, players)
         online_players = list(players.values())
-        offline_players = _offline_players_from_playerdata(server_dir)
+        online_names = {str(player.get("name", "")).casefold() for player in online_players}
+        online_uuids = {str(player.get("uuid", "")).casefold() for player in online_players if player.get("uuid")}
+        offline_players = _offline_players_from_playerdata(
+            server_dir,
+            online_names=online_names,
+            online_uuids=online_uuids,
+        )
         compatibility = _inventory_compatibility(server_dir)
         return {
             "targetName": target_name,
@@ -1371,9 +1377,16 @@ def _players_from_log(log_path: Path) -> dict[str, dict[str, object]]:
     return players
 
 
-def _offline_players_from_playerdata(server_dir: Path) -> list[dict[str, object]]:
+def _offline_players_from_playerdata(
+    server_dir: Path,
+    *,
+    online_names: set[str] | None = None,
+    online_uuids: set[str] | None = None,
+) -> list[dict[str, object]]:
     players: list[dict[str, object]] = []
     name_cache = _player_name_cache(server_dir)
+    online_names = online_names or set()
+    online_uuids = online_uuids or set()
     for path in sorted(_playerdata_dir(server_dir).glob("*.dat")):
         player_uuid = path.stem
         if not _is_safe_player_uuid(player_uuid):
@@ -1381,6 +1394,8 @@ def _offline_players_from_playerdata(server_dir: Path) -> list[dict[str, object]
         cached = name_cache.get(player_uuid.lower(), {})
         display_name = str(cached.get("name") or player_uuid)
         name_source = str(cached.get("source") or "uuid")
+        if player_uuid.casefold() in online_uuids or display_name.casefold() in online_names:
+            continue
         stat = path.stat()
         players.append(
             {
