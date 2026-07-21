@@ -22,7 +22,7 @@ from pack2serve.java import (
 )
 from pack2serve.loader import LoaderInstallPlan, create_loader_install_plan
 from pack2serve.installer import LoaderInstaller
-from pack2serve.panel import PanelService
+from pack2serve.panel import PanelService, ProjectJob
 from pack2serve.parser import ModpackFormat, parse_modpack
 from pack2serve.validator import ServerValidator
 from pack2serve.web import (
@@ -1069,6 +1069,51 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual(thread_class.call_count, 1)
             thread_class.return_value.start.assert_called_once()
 
+    def test_panel_create_prepares_existing_target_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.mrpack"
+            pack.write_bytes(b"placeholder")
+            target = tmp_path / "workspace/servers/job-server"
+            (target / "pack2serve").mkdir(parents=True)
+            (target / "server.properties").write_text("server-port=25565\n", encoding="utf-8")
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            job = ProjectJob(id="job", target_name="job-server")
+            service._jobs[job.id] = job
+            events: list[str] = []
+
+            fake_report = type(
+                "FakeReport",
+                (),
+                {
+                    "downloads": [],
+                    "manual_actions": [],
+                    "to_json_dict": lambda self: {},
+                },
+            )()
+
+            with patch("pack2serve.panel._prepare_target_for_build", side_effect=lambda path: events.append("prepare")), patch(
+                "pack2serve.panel.ServerBuilder"
+            ) as builder_class, patch("pack2serve.panel.load_java_runtime_install_plan", return_value=object()), patch(
+                "pack2serve.panel.load_loader_plan", return_value=object()
+            ), patch("pack2serve.panel.JavaInstaller") as java_installer_class, patch(
+                "pack2serve.panel.LoaderInstaller"
+            ) as loader_installer_class, patch.object(
+                ServerValidator,
+                "validate",
+                return_value=type("ValidationResult", (), {"status": "started", "to_json_dict": lambda self: {}})(),
+            ), patch(
+                "pack2serve.panel._summary_from_report",
+                return_value={"targetName": "job-server", "name": "Job Server"},
+            ):
+                builder_class.return_value.build.side_effect = lambda *args, **kwargs: events.append("build") or fake_report
+                java_installer_class.return_value.install.return_value = type("Result", (), {"status": "installed"})()
+                loader_installer_class.return_value.install.return_value = type("Result", (), {"status": "installed"})()
+                service._run_create_project(job.id, pack, "job-server", "Job Server", True, True, [])
+
+            self.assertEqual(events[:2], ["prepare", "build"])
+            self.assertEqual(service.project_job(job.id)["status"], "completed")
+
     def test_panel_service_create_project_auto_validates_before_completion(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1476,6 +1521,11 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn("creatingProject", PANEL_HTML)
         self.assertIn('state.creatingProject = true', PANEL_HTML)
         self.assertIn('提交中，请稍等', PANEL_HTML)
+        self.assertIn("restoreActiveJob", PANEL_HTML)
+        self.assertIn('const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId"', PANEL_HTML)
+        self.assertIn("localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId)", PANEL_HTML)
+        self.assertIn("localStorage.getItem(ACTIVE_JOB_STORAGE_KEY)", PANEL_HTML)
+        self.assertIn("localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY)", PANEL_HTML)
         self.assertIn('type="file"', PANEL_HTML)
         self.assertIn("/api/projects/upload", PANEL_HTML)
         self.assertIn("/api/servers/delete", PANEL_HTML)

@@ -826,6 +826,7 @@ PANEL_HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds"]);
     const HOME_ROUTE = "#/projects";
+    const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
     const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false };
 
     async function api(path, options = {}) {
@@ -1301,15 +1302,36 @@ PANEL_HTML = r"""<!doctype html>
 
     function watchJob(jobId) {
       state.jobId = jobId;
+      localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, jobId);
       $("activeJob").classList.remove("hidden");
       if (state.jobTimer) clearInterval(state.jobTimer);
       pollJob();
       state.jobTimer = setInterval(pollJob, 1200);
     }
 
+    function clearActiveJob() {
+      state.jobId = "";
+      localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+      if (state.jobTimer) clearInterval(state.jobTimer);
+      state.jobTimer = null;
+    }
+
+    function restoreActiveJob() {
+      const savedJobId = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+      if (savedJobId) watchJob(savedJobId);
+    }
+
     async function pollJob() {
       if (!state.jobId) return;
-      const payload = await api(`/api/projects/jobs?jobId=${encodeURIComponent(state.jobId)}`);
+      let payload;
+      try {
+        payload = await api(`/api/projects/jobs?jobId=${encodeURIComponent(state.jobId)}`);
+      } catch (error) {
+        clearActiveJob();
+        $("activeJob").classList.add("hidden");
+        toast(error.message);
+        return;
+      }
       const job = payload.job;
       $("jobTitle").textContent = `正在创建 ${job.targetName}`;
       $("jobMessage").textContent = job.message;
@@ -1317,8 +1339,7 @@ PANEL_HTML = r"""<!doctype html>
       $("jobFill").style.width = `${job.progress}%`;
       document.querySelectorAll(".stage").forEach((stage) => stage.classList.toggle("current", stage.dataset.stage === job.stage));
       if (job.status === "completed" || job.status === "failed") {
-        clearInterval(state.jobTimer);
-        state.jobTimer = null;
+        clearActiveJob();
         toast(job.status === "completed" ? "项目创建成功" : `项目创建失败：${job.error || job.message}`);
         await refresh();
         if (job.status === "completed" && job.server) openProject(job.server.targetName);
@@ -1376,6 +1397,7 @@ PANEL_HTML = r"""<!doctype html>
     setInterval(() => loadWorlds().catch(() => {}), 8000);
     updateCreateButton();
     if (!location.hash) location.hash = HOME_ROUTE;
+    restoreActiveJob();
     refresh().catch((error) => toast(error.message));
   </script>
   <script type="application/json" id="legacyPanelScript">

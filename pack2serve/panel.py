@@ -138,6 +138,15 @@ class PanelService:
             None,
         )
 
+    def _stop_running_server_for_rebuild(self, target_name: str) -> bool:
+        with self._lock:
+            running = self._running.get(target_name)
+            is_running = bool(running and running.process.poll() is None)
+        if not is_running:
+            return False
+        self.stop_server(target_name)
+        return True
+
     def _run_create_project(
         self,
         job_id: str,
@@ -155,6 +164,11 @@ class PanelService:
             self._append_job_log(job_id, f"项目目录: {target}")
             self._append_job_log(job_id, f"整合包: {pack_path}")
             self._update_job(job_id, stage="build", progress=22, message="解析整合包并复制 overrides")
+            if self._stop_running_server_for_rebuild(target_name):
+                self._append_job_log(job_id, "Stopped existing server process before rebuild.")
+            terminated = _prepare_target_for_build(target)
+            if terminated:
+                self._append_job_log(job_id, f"Terminated locked process(es) before rebuild: {', '.join(str(pid) for pid in terminated)}")
             report = ServerBuilder(
                 cache_dir=self.cache_dir,
                 download_remote=download,
@@ -1297,6 +1311,15 @@ def _remove_tree_with_retries(path: Path, *, attempts: int = 6, delay_seconds: f
                 break
             time.sleep(delay_seconds)
     raise ValueError(f"Project directory is still locked by another process: {path}. Last error: {last_error}") from last_error
+
+
+def _prepare_target_for_build(target: Path) -> list[int]:
+    resolved = target.resolve()
+    if not resolved.exists():
+        return []
+    terminated_processes = _terminate_external_processes_for_path(resolved)
+    _remove_tree_with_retries(resolved)
+    return terminated_processes
 
 
 def _terminate_external_processes_for_path(project_dir: Path) -> list[int]:
