@@ -1349,6 +1349,35 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertIn("gamemode creative Alice", suggestions["suggestions"])
             self.assertIn("gamemode survival Alice", suggestions["suggestions"])
 
+    def test_panel_service_manages_worlds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            server_dir = tmp_path / "workspace/servers/sample-server"
+            (server_dir / "pack2serve").mkdir(parents=True)
+            (server_dir / "World").mkdir(parents=True)
+            (server_dir / "OldWorld").mkdir(parents=True)
+            (server_dir / "World/level.dat").write_bytes(b"world")
+            (server_dir / "OldWorld/level.dat").write_bytes(b"old")
+            (server_dir / "server.properties").write_text("level-name=World\nserver-port=25565\n", encoding="utf-8")
+            _write_minimal_build_report(server_dir, name="Sample Server")
+
+            service = PanelService(tmp_path / "workspace", advertise_host="127.0.0.1")
+            worlds = service.server_worlds("sample-server")
+            created = service.create_world("sample-server", "New World")
+            selected = service.select_world("sample-server", "New World")
+            backup = service.backup_world("sample-server", "New World")
+
+            self.assertEqual(worlds["currentWorld"], "World")
+            self.assertEqual([world["name"] for world in worlds["worlds"]], ["OldWorld", "World"])
+            self.assertEqual(created["world"]["name"], "New World")
+            self.assertTrue((server_dir / "New World").exists())
+            self.assertEqual(selected["currentWorld"], "New World")
+            self.assertIn("level-name=New World", (server_dir / "server.properties").read_text(encoding="utf-8"))
+            self.assertEqual(backup["status"], "backed-up")
+            self.assertTrue(Path(backup["backupPath"]).exists())
+            with zipfile.ZipFile(backup["backupPath"]) as archive:
+                self.assertIn("New World/", archive.namelist())
+
     def test_panel_service_deletes_project_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             tmp_path = Path(temp)
@@ -1387,6 +1416,8 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('id="metricsGrid"', PANEL_HTML)
         self.assertIn('id="playerDetail"', PANEL_HTML)
         self.assertIn('id="modsList"', PANEL_HTML)
+        self.assertIn('id="worldsList"', PANEL_HTML)
+        self.assertIn('id="createWorld"', PANEL_HTML)
         self.assertIn('id="keySettings"', PANEL_HTML)
         self.assertIn('id="commandSuggestions"', PANEL_HTML)
         self.assertIn('data-stage="validate"', PANEL_HTML)
@@ -1399,6 +1430,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn("/api/servers/delete", PANEL_HTML)
         self.assertIn("/api/servers/metrics", PANEL_HTML)
         self.assertIn("/api/servers/mods", PANEL_HTML)
+        self.assertIn("/api/servers/worlds", PANEL_HTML)
         self.assertIn("/api/servers/key-settings", PANEL_HTML)
         self.assertIn("/api/servers/command-suggestions", PANEL_HTML)
         self.assertIn("button, input, textarea, select", PANEL_HTML)

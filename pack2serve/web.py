@@ -58,6 +58,9 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                 if route == "/api/servers/mods":
                     self._send_json({"mods": service.server_mods(query.get("targetName", [""])[0])})
                     return
+                if route == "/api/servers/worlds":
+                    self._send_json({"worlds": service.server_worlds(query.get("targetName", [""])[0])})
+                    return
                 if route == "/api/servers/command-suggestions":
                     self._send_json(
                         {
@@ -178,6 +181,36 @@ def serve(host: str = "127.0.0.1", port: int = 8765, workspace_dir: str | Path =
                     return
                 if route == "/api/servers/mods/delete":
                     self._send_json({"result": service.delete_mod(payload["targetName"], payload["fileName"])})
+                    return
+                if route == "/api/servers/worlds/create":
+                    self._send_json(
+                        {
+                            "result": service.create_world(
+                                payload["targetName"],
+                                str(payload.get("worldName", "")),
+                            )
+                        }
+                    )
+                    return
+                if route == "/api/servers/worlds/select":
+                    self._send_json(
+                        {
+                            "result": service.select_world(
+                                payload["targetName"],
+                                str(payload.get("worldName", "")),
+                            )
+                        }
+                    )
+                    return
+                if route == "/api/servers/worlds/backup":
+                    self._send_json(
+                        {
+                            "result": service.backup_world(
+                                payload["targetName"],
+                                str(payload.get("worldName", "")) or None,
+                            )
+                        }
+                    )
                     return
                 self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
             except Exception as exc:
@@ -526,7 +559,7 @@ PANEL_HTML = r"""<!doctype html>
     .mod-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
     .mod-toolbar input { width: auto; flex: 1; }
     .mod-list { display: grid; gap: 9px; }
-    .mod-row {
+    .mod-row, .world-row {
       display: grid;
       grid-template-columns: 42px minmax(0, 1fr) auto;
       gap: 10px;
@@ -537,6 +570,16 @@ PANEL_HTML = r"""<!doctype html>
       padding: 9px;
     }
     .mod-icon { width: 36px; height: 36px; border-radius: 8px; background: #e4e1d7; object-fit: cover; image-rendering: pixelated; }
+    .world-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: #d6eee5;
+      color: #176246;
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+    }
     .command-wrap { position: relative; }
     .suggestions {
       position: absolute;
@@ -678,6 +721,7 @@ PANEL_HTML = r"""<!doctype html>
               <button class="tab" data-tab="properties">服务器参数</button>
               <button class="tab" data-tab="players">在线玩家</button>
               <button class="tab" data-tab="mods">模组列表</button>
+              <button class="tab" data-tab="worlds">世界</button>
             </div>
             <div id="tabStatus" class="hidden">
               <div class="metrics-grid" id="metricsGrid"></div>
@@ -709,6 +753,13 @@ PANEL_HTML = r"""<!doctype html>
                 <button class="primary" id="addMod">添加模组</button>
               </div>
               <div class="mod-list" id="modsList"></div>
+            </div>
+            <div id="tabWorlds" class="hidden">
+              <div class="mod-toolbar">
+                <input id="worldName" placeholder="新世界名称，例如 world-2">
+                <button class="primary" id="createWorld">新建世界</button>
+              </div>
+              <div class="mod-list" id="worldsList"></div>
             </div>
           </div>
           <aside class="panel">
@@ -1069,10 +1120,55 @@ PANEL_HTML = r"""<!doctype html>
       await loadMods();
     }
 
+    async function loadWorlds() {
+      if (!state.selected || state.tab !== "worlds") return;
+      const payload = await api(`/api/servers/worlds?targetName=${encodeURIComponent(state.selected.targetName)}`);
+      const worlds = payload.worlds.worlds;
+      $("worldsList").innerHTML = worlds.map(worldRow).join("") || `<div class="subtle">还没有世界目录。新建世界后，服务器重启会生成完整世界数据。</div>`;
+    }
+
+    function worldRow(world) {
+      return `<div class="world-row">
+        <div class="world-icon">W</div>
+        <div>
+          <strong>${escapeHtml(world.name)}</strong>
+          <div class="subtle">${world.current ? "当前世界 / " : ""}${formatBytes(world.sizeBytes)}${world.hasLevelDat ? " / level.dat" : " / 新世界"}</div>
+        </div>
+        <div class="card-actions">
+          ${world.current ? "" : `<button class="secondary" onclick="runAction(() => selectWorld('${escapeAttr(world.name)}'))">设为当前</button>`}
+          <button class="primary" onclick="runAction(() => backupWorld('${escapeAttr(world.name)}'))">备份</button>
+        </div>
+      </div>`;
+    }
+
+    async function createWorld() {
+      if (!state.selected) return;
+      const worldName = $("worldName").value.trim();
+      if (!worldName) throw new Error("请输入新世界名称。");
+      await api("/api/servers/worlds/create", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, worldName }) });
+      $("worldName").value = "";
+      toast("世界已创建。选择为当前世界后，重启服务器生效。");
+      await loadWorlds();
+    }
+
+    async function selectWorld(worldName) {
+      await api("/api/servers/worlds/select", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, worldName }) });
+      toast("当前世界已切换，重启服务器后生效。");
+      await loadWorlds();
+      await loadProperties();
+      await refreshMetrics();
+    }
+
+    async function backupWorld(worldName) {
+      const payload = await api("/api/servers/worlds/backup", { method: "POST", body: JSON.stringify({ targetName: state.selected.targetName, worldName }) });
+      toast(`世界已备份：${payload.result.backupPath}`);
+      await loadWorlds();
+    }
+
     function setTab(tab) {
       state.tab = tab;
       document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
-      ["Status", "Logs", "Properties", "Players", "Mods"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", tab !== name.toLowerCase()));
+      ["Status", "Logs", "Properties", "Players", "Mods", "Worlds"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", tab !== name.toLowerCase()));
       refreshVisibleTab();
     }
 
@@ -1082,6 +1178,7 @@ PANEL_HTML = r"""<!doctype html>
       if (state.tab === "properties") await loadProperties();
       if (state.tab === "players") await refreshPlayers();
       if (state.tab === "mods") await loadMods();
+      if (state.tab === "worlds") await loadWorlds();
     }
 
     function updateCreateButton() { $("createProject").disabled = !$("download").checked || !$("acceptEula").checked; }
@@ -1167,6 +1264,7 @@ PANEL_HTML = r"""<!doctype html>
     $("saveProperties").onclick = () => runAction(saveProperties);
     $("saveKeySettings").onclick = () => runAction(saveKeySettings);
     $("addMod").onclick = () => runAction(addMod);
+    $("createWorld").onclick = () => runAction(createWorld);
     $("consoleCommand").addEventListener("input", () => refreshCommandSuggestions().catch(() => {}));
     $("consoleCommand").addEventListener("keydown", (event) => { if (event.key === "Enter") runAction(sendCommand); if (event.key === "Escape") $("commandSuggestions").classList.add("hidden"); });
     document.querySelectorAll(".tab").forEach((button) => button.onclick = () => setTab(button.dataset.tab));
@@ -1175,6 +1273,7 @@ PANEL_HTML = r"""<!doctype html>
     setInterval(() => refreshLogs().catch(() => {}), 2000);
     setInterval(() => refreshPlayers().catch(() => {}), 3000);
     setInterval(() => loadMods().catch(() => {}), 8000);
+    setInterval(() => loadWorlds().catch(() => {}), 8000);
     updateCreateButton();
     refresh().catch((error) => toast(error.message));
   </script>

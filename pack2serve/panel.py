@@ -533,6 +533,69 @@ class PanelService:
             },
         }
 
+    def server_worlds(self, target_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        properties = _read_properties(server_dir / "server.properties")
+        current_world = properties.get("level-name", "world")
+        worlds = [_world_entry(path, current_world=current_world) for path in _world_directories(server_dir)]
+        return {
+            "targetName": target_name,
+            "currentWorld": current_world,
+            "worlds": worlds,
+            "note": "切换当前世界会写入 server.properties 的 level-name，重启服务器后生效。",
+        }
+
+    def create_world(self, target_name: str, world_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        clean_name = _safe_world_name(world_name)
+        world_dir = server_dir / clean_name
+        if world_dir.exists():
+            raise ValueError(f"World already exists: {clean_name}")
+        world_dir.mkdir(parents=True)
+        return {
+            "targetName": target_name,
+            "status": "created",
+            "world": _world_entry(world_dir, current_world=_read_properties(server_dir / "server.properties").get("level-name", "world")),
+        }
+
+    def select_world(self, target_name: str, world_name: str) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        clean_name = _safe_world_name(world_name)
+        world_dir = server_dir / clean_name
+        if not world_dir.exists() or not world_dir.is_dir():
+            raise ValueError(f"Unknown world: {clean_name}")
+        properties_path = server_dir / "server.properties"
+        properties = _read_properties(properties_path)
+        properties["level-name"] = clean_name
+        _write_properties(properties_path, properties)
+        return {
+            "targetName": target_name,
+            "status": "selected",
+            "currentWorld": clean_name,
+            "requiresRestart": True,
+            "note": "重启服务器后会加载所选世界。",
+        }
+
+    def backup_world(self, target_name: str, world_name: str | None = None) -> dict[str, object]:
+        server_dir = self._server_dir(target_name)
+        properties = _read_properties(server_dir / "server.properties")
+        clean_name = _safe_world_name(world_name or properties.get("level-name", "world"))
+        world_dir = server_dir / clean_name
+        if not world_dir.exists() or not world_dir.is_dir():
+            raise ValueError(f"Unknown world: {clean_name}")
+        backups_dir = server_dir / "backups" / "worlds"
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        backup_path = backups_dir / f"{_backup_file_stem(clean_name)}-{timestamp}.zip"
+        _zip_directory(world_dir, backup_path, root_name=clean_name)
+        return {
+            "targetName": target_name,
+            "status": "backed-up",
+            "worldName": clean_name,
+            "backupPath": str(backup_path),
+            "sizeBytes": backup_path.stat().st_size,
+        }
+
     def _legacy_server_players(self, target_name: str) -> dict[str, object]:
         server_dir = self._server_dir(target_name)
         log_path = server_dir / "logs" / "panel-server.log"
@@ -1038,6 +1101,71 @@ def _safe_mod_filename(filename: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._+() -]+\.jar", safe_name):
         raise ValueError(f"Invalid mod file name: {filename}")
     return safe_name
+
+
+_NON_WORLD_DIRS = {
+    ".fabric",
+    ".mixin.out",
+    "backups",
+    "config",
+    "crash-reports",
+    "defaultconfigs",
+    "disabled-mods",
+    "libraries",
+    "logs",
+    "mods",
+    "pack2serve",
+    "runtime",
+    "versions",
+}
+
+
+def _safe_world_name(value: str) -> str:
+    clean = value.strip()
+    if not clean or clean in {".", ".."}:
+        raise ValueError("World name cannot be empty.")
+    if any(char in clean for char in '<>:"/\\|?*') or any(ord(char) < 32 for char in clean):
+        raise ValueError(f"Invalid world name: {value}")
+    if clean.endswith(".") or clean.endswith(" "):
+        raise ValueError(f"Invalid world name: {value}")
+    return clean
+
+
+def _world_directories(server_dir: Path) -> list[Path]:
+    if not server_dir.exists():
+        return []
+    worlds: list[Path] = []
+    for path in server_dir.iterdir():
+        if not path.is_dir():
+            continue
+        if path.name.lower() in _NON_WORLD_DIRS:
+            continue
+        if (path / "level.dat").exists() or not any(path.iterdir()):
+            worlds.append(path)
+    return sorted(worlds, key=lambda item: item.name.lower())
+
+
+def _world_entry(path: Path, *, current_world: str) -> dict[str, object]:
+    return {
+        "name": path.name,
+        "path": str(path),
+        "current": path.name == current_world,
+        "exists": path.exists(),
+        "sizeBytes": _directory_size(path),
+        "hasLevelDat": (path / "level.dat").exists(),
+        "lastModified": int(path.stat().st_mtime) if path.exists() else None,
+    }
+
+
+def _backup_file_stem(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._") or "world"
+
+
+def _zip_directory(source: Path, destination: Path, *, root_name: str) -> None:
+    with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f"{root_name}/", b"")
+        for path in sorted(source.rglob("*")):
+            archive.write(path, Path(root_name) / path.relative_to(source))
 
 
 def _read_mod_entry(path: Path, *, enabled: bool) -> dict[str, object]:
