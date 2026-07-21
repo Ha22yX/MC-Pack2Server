@@ -887,6 +887,20 @@ PANEL_HTML = r"""<!doctype html>
       </div>
     </form>
   </dialog>
+
+  <dialog id="playerActionDialog">
+    <form method="dialog">
+      <div class="modal-head">
+        <h2 id="playerActionTitle">玩家操作</h2>
+        <div class="subtle" id="playerActionSubtitle"></div>
+      </div>
+      <div class="modal-body" id="playerActionFields"></div>
+      <div class="modal-actions">
+        <button class="secondary" value="cancel">取消</button>
+        <button class="primary" id="playerActionConfirm" type="button">执行</button>
+      </div>
+    </form>
+  </dialog>
   <div class="toast-stack" id="toastStack"></div>
 
   <script>
@@ -894,7 +908,7 @@ PANEL_HTML = r"""<!doctype html>
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds", "files"]);
     const HOME_ROUTE = "#/projects";
     const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false, filePath: "", logPinnedToBottom: true };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "", creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -1225,13 +1239,13 @@ PANEL_HTML = r"""<!doctype html>
       const rot = formatRotation(player.rotation, "等待探测");
       $("playerDetail").innerHTML = `
         <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3>${escapeHtml(player.name)}</h3><div class="subtle">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
-        <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("复活点", player.respawnPoint || "需要探针")}${metricCard("背包", player.inventory?.length ? `${player.inventory.length} 项` : "需要探针")}</div>
+        <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("复活点", player.respawnPoint || "暂未接入读取")}${metricCard("背包", player.inventory?.length ? `${player.inventory.length} 项` : "暂未接入读取")}</div>
         <div class="card-actions">
           <button class="secondary" onclick="runAction(() => playerAction('probe', { player: '${escapeAttr(player.name)}' }))">刷新状态</button>
           <button class="primary" onclick="runAction(() => playerAction('op', { player: '${escapeAttr(player.name)}' }))">设为 OP</button>
-          <button class="secondary" onclick="changeGameMode('${escapeAttr(player.name)}')">改模式</button>
-          <button class="secondary" onclick="teleportPlayer('${escapeAttr(player.name)}')">TP</button>
-          <button class="danger" onclick="runAction(() => playerAction('ban', { player: '${escapeAttr(player.name)}', reason: prompt('封禁原因', '') || '' }))">封禁</button>
+          <button class="secondary" onclick="openPlayerActionDialog('gamemode', '${escapeAttr(player.name)}')">改模式</button>
+          <button class="secondary" onclick="openPlayerActionDialog('tp', '${escapeAttr(player.name)}')">TP</button>
+          <button class="danger" onclick="openPlayerActionDialog('ban', '${escapeAttr(player.name)}')">封禁</button>
           <button class="danger" onclick="runAction(() => playerAction('kill', { player: '${escapeAttr(player.name)}' }))">杀死</button>
           <button class="danger" onclick="runAction(() => playerAction('clear', { player: '${escapeAttr(player.name)}' }))">清空背包</button>
         </div>`;
@@ -1259,16 +1273,71 @@ PANEL_HTML = r"""<!doctype html>
       await refreshPlayers();
     }
 
-    function changeGameMode(player) {
-      const gameMode = prompt("输入游戏模式：survival / creative / adventure / spectator", "survival");
-      if (gameMode) runAction(() => playerAction("gamemode", { player, gameMode }));
+    function openPlayerActionDialog(action, playerName) {
+      const player = state.players.find((item) => item.name === playerName) || { name: playerName };
+      state.pendingPlayerAction = { action, playerName };
+      const titles = {
+        gamemode: "修改游戏模式",
+        tp: "传送玩家",
+        ban: "封禁玩家",
+      };
+      $("playerActionTitle").textContent = titles[action] || "玩家操作";
+      $("playerActionSubtitle").textContent = `${playerName} · ${state.selected?.name || ""}`;
+      $("playerActionFields").innerHTML = playerActionFields(action, player);
+      $("playerActionDialog").showModal();
     }
 
-    function teleportPlayer(player) {
-      const raw = prompt("输入坐标：x y z", "0 80 0");
-      if (!raw) return;
-      const [x, y, z] = raw.trim().split(/\s+/);
-      runAction(() => playerAction("tp", { player, x, y, z }));
+    function playerActionFields(action, player) {
+      if (action === "gamemode") {
+        const current = ["survival", "creative", "adventure", "spectator"].includes(player.gameMode) ? player.gameMode : "survival";
+        return `
+          <label>游戏模式
+            <select id="playerGameMode">
+              ${["survival", "creative", "adventure", "spectator"].map((mode) => `<option value="${mode}" ${mode === current ? "selected" : ""}>${mode}</option>`).join("")}
+            </select>
+          </label>`;
+      }
+      if (action === "tp") {
+        const pos = player.position || { x: 0, y: 80, z: 0 };
+        return `
+          <div class="settings-grid">
+            <label>X<input id="playerTpX" type="number" step="0.1" value="${escapeAttr(formatCoordinate(pos.x))}"></label>
+            <label>Y<input id="playerTpY" type="number" step="0.1" value="${escapeAttr(formatCoordinate(pos.y))}"></label>
+            <label>Z<input id="playerTpZ" type="number" step="0.1" value="${escapeAttr(formatCoordinate(pos.z))}"></label>
+          </div>`;
+      }
+      if (action === "ban") {
+        return `
+          <label>封禁原因
+            <input id="playerBanReason" placeholder="可留空，默认由 Pack2Serve 记录">
+          </label>
+          <div class="subtle">这是危险操作，执行后玩家会被加入服务器封禁列表。</div>`;
+      }
+      return "";
+    }
+
+    async function confirmPlayerAction() {
+      const pending = state.pendingPlayerAction;
+      if (!pending) return;
+      const { action, playerName } = pending;
+      if (action === "gamemode") {
+        await playerAction("gamemode", { player: playerName, gameMode: $("playerGameMode").value });
+      } else if (action === "tp") {
+        const x = requireCoordinate("playerTpX");
+        const y = requireCoordinate("playerTpY");
+        const z = requireCoordinate("playerTpZ");
+        await playerAction("tp", { player: playerName, x, y, z });
+      } else if (action === "ban") {
+        await playerAction("ban", { player: playerName, reason: $("playerBanReason").value.trim() });
+      }
+      state.pendingPlayerAction = null;
+      $("playerActionDialog").close();
+    }
+
+    function requireCoordinate(id) {
+      const value = $(id).value.trim();
+      if (!value || !Number.isFinite(Number(value))) throw new Error("请输入有效坐标。");
+      return Number(value).toFixed(1);
     }
 
     async function loadMods() {
@@ -1547,6 +1616,7 @@ PANEL_HTML = r"""<!doctype html>
     $("detailStop").onclick = () => state.selected && runAction(() => stopServer(state.selected.targetName));
     $("detailDelete").onclick = () => state.selected && runAction(() => deleteProject(state.selected.targetName, state.selected.name));
     $("sendCommand").onclick = () => runAction(sendCommand);
+    $("playerActionConfirm").onclick = () => runAction(confirmPlayerAction);
     $("saveProperties").onclick = () => runAction(saveProperties);
     $("saveKeySettings").onclick = () => runAction(saveKeySettings);
     $("addMod").onclick = () => runAction(addMod);
