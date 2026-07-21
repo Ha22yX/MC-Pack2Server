@@ -580,6 +580,7 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertEqual((target / "mods/local.jar").read_bytes(), b"jar")
             self.assertTrue((target / "kubejs/server_scripts/main.js").exists())
             self.assertEqual((target / "ftbteambases/pregen_initial/region/r.0.0.mca").read_bytes(), b"region")
+            self.assertEqual((target / "world/region/r.0.0.mca").read_bytes(), b"region")
             self.assertTrue((target / "resources/assets/lycanitesmobs/spawners/global.json").exists())
             self.assertTrue((target / "structures/active/tower.rcst").exists())
             self.assertTrue((target / "_client-overrides/shaderpacks/client.zip").exists())
@@ -593,6 +594,79 @@ class Pack2ServeCoreTests(unittest.TestCase):
             self.assertTrue((target / "server.properties").exists())
             self.assertEqual(report.java.required_major, 17)
             self.assertEqual(report.downloads[0].target_path, "mods/remote.jar")
+
+    def test_server_builder_applies_ftb_team_bases_initial_pregen_to_configured_lobby_dimension(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.mrpack"
+            write_zip(
+                pack,
+                {
+                    "modrinth.index.json": json.dumps(
+                        {
+                            "formatVersion": 1,
+                            "game": "minecraft",
+                            "name": "FTB Team Bases Pregen",
+                            "versionId": "1.0.0",
+                            "dependencies": {"minecraft": "1.21.1", "neoforge": "21.1.233"},
+                            "files": [],
+                        }
+                    ),
+                    "overrides/defaultconfigs/ftbteambases/ftbteambases-server.snbt": (
+                        '{ lobby: { lobby_dimension: "ftbteambases:lobby" } }'
+                    ),
+                    "overrides/ftbteambases/pregen_initial/region/r.0.0.mca": b"lobby-region",
+                    "overrides/ftbteambases/pregen_initial/entities/r.0.0.mca": b"lobby-entities",
+                    "overrides/ftbteambases/pregen_initial/dimensions/ftb/the_rift/region/r.0.0.mca": b"rift-region",
+                },
+            )
+            target = tmp_path / "server"
+
+            report = ServerBuilder().build(pack, target)
+
+            self.assertEqual(
+                (target / "world/dimensions/ftbteambases/lobby/region/r.0.0.mca").read_bytes(),
+                b"lobby-region",
+            )
+            self.assertEqual(
+                (target / "world/dimensions/ftbteambases/lobby/entities/r.0.0.mca").read_bytes(),
+                b"lobby-entities",
+            )
+            self.assertEqual(
+                (target / "world/dimensions/ftb/the_rift/region/r.0.0.mca").read_bytes(),
+                b"rift-region",
+            )
+            destinations = {item.destination for item in report.copied_overrides}
+            self.assertIn("world/dimensions/ftbteambases/lobby/region/r.0.0.mca", destinations)
+            self.assertIn("world/dimensions/ftb/the_rift/region/r.0.0.mca", destinations)
+
+    def test_server_builder_applies_ftb_team_bases_initial_pregen_to_custom_level_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            tmp_path = Path(temp)
+            pack = tmp_path / "sample.mrpack"
+            write_zip(
+                pack,
+                {
+                    "modrinth.index.json": json.dumps(
+                        {
+                            "formatVersion": 1,
+                            "game": "minecraft",
+                            "name": "Custom World Pregen",
+                            "versionId": "1.0.0",
+                            "dependencies": {"minecraft": "1.21.1", "neoforge": "21.1.233"},
+                            "files": [],
+                        }
+                    ),
+                    "overrides/server.properties": "level-name=OceanLobby\nserver-port=25565\n",
+                    "overrides/ftbteambases/pregen_initial/region/r.0.0.mca": b"custom-world-region",
+                },
+            )
+            target = tmp_path / "server"
+
+            ServerBuilder().build(pack, target)
+
+            self.assertEqual((target / "OceanLobby/region/r.0.0.mca").read_bytes(), b"custom-world-region")
+            self.assertFalse((target / "world/region/r.0.0.mca").exists())
 
     def test_artifact_cache_downloads_modrinth_file_uri_and_reuses_cache(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

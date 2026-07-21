@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -140,6 +141,7 @@ class ServerBuilder:
         with zipfile.ZipFile(pack.source_path) as archive:
             require_safe_zip(archive)
             copied = self._copy_overrides(archive, pack.override_root, target)
+        copied.extend(self._apply_ftb_team_bases_initial_pregen(target))
         self._progress({"type": "copy-complete", "copied": len(copied), "message": f"已复制 {len(copied)} 个 overrides 条目"})
 
         self._progress({"type": "download-start", "total": len(pack.remote_files), "completed": 0})
@@ -408,6 +410,44 @@ class ServerBuilder:
                 encoding="utf-8",
             )
 
+    def _apply_ftb_team_bases_initial_pregen(self, target: Path) -> list[CopiedOverride]:
+        pregen = target / "ftbteambases" / "pregen_initial"
+        if not pregen.exists():
+            return []
+
+        copied: list[CopiedOverride] = []
+        lobby_dimension = _ftb_team_bases_lobby_dimension(target)
+        copied.extend(
+            _copy_initial_pregen_dimension(
+                pregen,
+                _dimension_data_root(target, lobby_dimension),
+                target,
+                source_prefix="ftbteambases/pregen_initial",
+            )
+        )
+
+        dimensions = pregen / "dimensions"
+        if dimensions.exists():
+            for storage_dir in dimensions.rglob("*"):
+                if not storage_dir.is_dir() or storage_dir.name not in {"region", "entities", "poi"}:
+                    continue
+                dimension_parts = storage_dir.relative_to(dimensions).parts[:-1]
+                if len(dimension_parts) < 2:
+                    continue
+                dimension = f"{dimension_parts[0]}:{'/'.join(dimension_parts[1:])}"
+                copied.extend(
+                    _copy_directory_contents(
+                        storage_dir,
+                        _dimension_data_root(target, dimension) / storage_dir.name,
+                        target,
+                        source_prefix=(
+                            "ftbteambases/pregen_initial/dimensions/"
+                            f"{'/'.join(dimension_parts)}/{storage_dir.name}"
+                        ),
+                    )
+                )
+        return copied
+
 
 def _remote_to_dict(remote: object) -> dict[str, object]:
     return dict(remote.__dict__)
@@ -423,6 +463,98 @@ def _remote_progress_name(remote: RemoteFile) -> str:
     if remote.project_id and remote.file_id:
         return f"{remote.project_id}/{remote.file_id}"
     return remote.provider or "remote file"
+
+
+def _ftb_team_bases_lobby_dimension(target: Path) -> str:
+    config_paths = [
+        target / "defaultconfigs" / "ftbteambases" / "ftbteambases-server.snbt",
+        target / "world" / "serverconfig" / "ftbteambases-server.snbt",
+    ]
+    for path in config_paths:
+        if not path.exists():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        match = re.search(r'lobby_dimension\s*:\s*"([^"]+)"', content)
+        if match:
+            return match.group(1)
+    return "minecraft:overworld"
+
+
+def _dimension_data_root(target: Path, dimension: str) -> Path:
+    world_root = _primary_world_dir(target)
+    if dimension == "minecraft:overworld":
+        return world_root
+    if dimension == "minecraft:the_nether":
+        return world_root / "DIM-1"
+    if dimension == "minecraft:the_end":
+        return world_root / "DIM1"
+    namespace, separator, path = dimension.partition(":")
+    if not separator or not namespace or not path:
+        return world_root / "dimensions" / "minecraft" / dimension
+    return world_root / "dimensions" / namespace / Path(*path.split("/"))
+
+
+def _primary_world_dir(target: Path) -> Path:
+    properties = target / "server.properties"
+    if not properties.exists():
+        return target / "world"
+    for line in properties.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() == "level-name" and value.strip():
+            return target / value.strip()
+    return target / "world"
+
+
+def _copy_initial_pregen_dimension(
+    source: Path,
+    destination_root: Path,
+    target: Path,
+    *,
+    source_prefix: str,
+) -> list[CopiedOverride]:
+    copied: list[CopiedOverride] = []
+    for storage_name in ("region", "entities", "poi"):
+        storage_dir = source / storage_name
+        if not storage_dir.exists():
+            continue
+        copied.extend(
+            _copy_directory_contents(
+                storage_dir,
+                destination_root / storage_name,
+                target,
+                source_prefix=f"{source_prefix}/{storage_name}",
+            )
+        )
+    return copied
+
+
+def _copy_directory_contents(
+    source: Path,
+    destination: Path,
+    target: Path,
+    *,
+    source_prefix: str,
+) -> list[CopiedOverride]:
+    copied: list[CopiedOverride] = []
+    for path in source.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(source)
+        dest = destination / relative
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+        copied.append(
+            CopiedOverride(
+                source=f"{source_prefix}/{relative.as_posix()}",
+                destination=str(dest.relative_to(target)).replace("\\", "/"),
+                classification="world-template",
+                size=path.stat().st_size,
+            )
+        )
+    return copied
 
 
 def _matches_client_only_mod(value: str) -> bool:
