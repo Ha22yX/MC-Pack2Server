@@ -800,13 +800,28 @@ PANEL_HTML = r"""<!doctype html>
     function cardTemplate(server) {
       return `<article class="project-card" onclick="openProject('${escapeAttr(server.targetName)}')">
         <div class="card-top"><div><div class="project-title">${escapeHtml(server.name)}</div><div class="subtle">${escapeHtml(server.targetName)}</div></div><span class="pill ${escapeAttr(server.runtimeStatus)}">${escapeHtml(server.runtimeStatus)}</span></div>
-        <div class="project-meta"><span class="pill">${escapeHtml(server.minecraftVersion)}</span><span class="pill">${escapeHtml(server.loader)}</span><span class="pill ${escapeAttr(server.compatibilityLevel)}">${escapeHtml(server.compatibilityLevel)}</span></div>
-        <div class="addr">${escapeHtml(server.connectAddress)}</div>
+        <div class="project-meta"><span class="pill">${escapeHtml(server.minecraftVersion)}</span><span class="pill">${escapeHtml(server.loader)}</span></div>
+        <div class="addr">连接 IP ${escapeHtml(server.connectAddress)}</div>
         <div class="card-actions">
+          <button class="secondary" onclick="event.stopPropagation(); runAction(() => copyAddress('${escapeAttr(server.connectAddress)}'))">复制地址</button>
           <button class="primary" onclick="event.stopPropagation(); runAction(() => startServer('${escapeAttr(server.targetName)}'))">启动</button>
           <button class="danger" onclick="event.stopPropagation(); runAction(() => stopServer('${escapeAttr(server.targetName)}'))">停止</button>
         </div>
       </article>`;
+    }
+
+    async function copyAddress(address) {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(address);
+      } else {
+        const input = document.createElement("input");
+        input.value = address;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      toast(`已复制连接地址：${address}`);
     }
 
     function openProject(targetName) {
@@ -863,7 +878,7 @@ PANEL_HTML = r"""<!doctype html>
       const payload = await api(`/api/servers/metrics?targetName=${encodeURIComponent(state.selected.targetName)}`);
       const metrics = payload.metrics;
       $("metricsGrid").innerHTML = [
-        metricCard("连接地址", metrics.runtime.connectAddress),
+        copyMetricCard("连接地址", metrics.runtime.connectAddress),
         metricCard("运行状态", metrics.runtime.runtimeStatus),
         metricCard("运行时长", formatDuration(metrics.runtime.uptimeSeconds || 0)),
         metricCard("世界时间", metrics.world.gameTime ?? "未知"),
@@ -876,6 +891,10 @@ PANEL_HTML = r"""<!doctype html>
 
     function metricCard(label, value) {
       return `<div class="mini-card"><span class="subtle">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+    }
+
+    function copyMetricCard(label, value) {
+      return `<div class="mini-card"><span class="subtle">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><div class="card-actions"><button class="secondary" onclick="runAction(() => copyAddress('${escapeAttr(value)}'))">复制地址</button></div></div>`;
     }
 
     async function refreshLogs() {

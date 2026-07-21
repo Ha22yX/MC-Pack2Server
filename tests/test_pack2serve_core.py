@@ -1407,14 +1407,24 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertNotIn('id="packPath"', PANEL_HTML)
         self.assertNotIn('id="mirrors"', PANEL_HTML)
 
-    def test_panel_home_project_cards_only_show_start_and_stop_actions(self) -> None:
+    def test_panel_home_project_cards_show_start_stop_and_copy_address_actions(self) -> None:
         card_template = PANEL_HTML.split("function cardTemplate(server)", 1)[1].split("function openProject", 1)[0]
 
-        self.assertEqual(card_template.count("<button"), 2)
+        self.assertEqual(card_template.count("<button"), 3)
         self.assertIn("startServer('${escapeAttr(server.targetName)}')", card_template)
         self.assertIn("stopServer('${escapeAttr(server.targetName)}')", card_template)
+        self.assertIn("copyAddress('${escapeAttr(server.connectAddress)}')", card_template)
+        self.assertIn("连接 IP", card_template)
+        self.assertNotIn("server.compatibilityLevel", card_template)
         self.assertNotIn("deleteProject('${escapeAttr(server.targetName)}')", card_template)
         self.assertNotIn("event.stopPropagation(); openProject('${escapeAttr(server.targetName)}')", card_template)
+
+    def test_panel_runtime_overview_connection_address_can_be_copied(self) -> None:
+        refresh_metrics = PANEL_HTML.split("async function refreshMetrics()", 1)[1].split("async function refreshLogs", 1)[0]
+
+        self.assertIn("copyMetricCard(\"连接地址\", metrics.runtime.connectAddress)", refresh_metrics)
+        self.assertIn("copyAddress('${escapeAttr(value)}')", refresh_metrics)
+        self.assertIn("复制地址", refresh_metrics)
 
     def test_panel_upload_multipart_parser_reads_pack_file_and_fields(self) -> None:
         boundary = "pack2serve-boundary"
