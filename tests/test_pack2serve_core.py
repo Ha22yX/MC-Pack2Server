@@ -1459,6 +1459,16 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('type="file"', PANEL_HTML)
         self.assertIn("/api/projects/upload", PANEL_HTML)
         self.assertIn("/api/servers/delete", PANEL_HTML)
+
+    def test_panel_html_persists_view_state_in_hash_routes(self) -> None:
+        self.assertIn('const HOME_ROUTE = "#/projects"', PANEL_HTML)
+        self.assertIn('function detailRoute(targetName, tab = state.tab)', PANEL_HTML)
+        self.assertIn('function applyRoute()', PANEL_HTML)
+        self.assertIn('window.addEventListener("hashchange"', PANEL_HTML)
+        self.assertIn('location.hash = HOME_ROUTE', PANEL_HTML)
+        self.assertIn('const next = detailRoute(targetName, tab)', PANEL_HTML)
+        self.assertIn('location.hash = next', PANEL_HTML)
+        self.assertIn('const routedTab = route.searchParams.get("tab") || "status"', PANEL_HTML)
         self.assertIn("/api/servers/metrics", PANEL_HTML)
         self.assertIn("/api/servers/mods", PANEL_HTML)
         self.assertIn("/api/servers/worlds", PANEL_HTML)

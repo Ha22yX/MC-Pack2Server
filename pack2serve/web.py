@@ -819,6 +819,8 @@ PANEL_HTML = r"""<!doctype html>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds"]);
+    const HOME_ROUTE = "#/projects";
     const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], selectedPlayer: "" };
 
     async function api(path, options = {}) {
@@ -845,13 +847,7 @@ PANEL_HTML = r"""<!doctype html>
       const payload = await api(`/api/servers?includeInternal=${state.showInternal ? "true" : "false"}`);
       state.servers = payload.servers;
       renderHome();
-      if (state.selected) {
-        const latest = state.servers.find((server) => server.targetName === state.selected.targetName);
-        if (latest) {
-          state.selected = latest;
-          renderDetail();
-        }
-      }
+      applyRoute();
     }
 
     function renderHome() {
@@ -890,13 +886,69 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     function openProject(targetName) {
-      state.selected = state.servers.find((server) => server.targetName === targetName);
-      if (!state.selected) return;
-      state.selectedPlayer = "";
+      routeToProject(targetName, "status");
+    }
+
+    function normalizeTab(tab) {
+      return VALID_TABS.has(tab) ? tab : "status";
+    }
+
+    function detailRoute(targetName, tab = state.tab) {
+      return `#/projects/${encodeURIComponent(targetName)}?tab=${encodeURIComponent(normalizeTab(tab))}`;
+    }
+
+    function parseRoute() {
+      const hash = location.hash || HOME_ROUTE;
+      const [path, query = ""] = hash.slice(1).split("?");
+      const parts = path.split("/").filter(Boolean);
+      return {
+        view: parts[0] === "projects" && parts[1] ? "detail" : "home",
+        targetName: parts[0] === "projects" && parts[1] ? decodeURIComponent(parts.slice(1).join("/")) : "",
+        searchParams: new URLSearchParams(query),
+      };
+    }
+
+    function routeHome() {
+      if (location.hash === HOME_ROUTE) {
+        applyRoute();
+      } else {
+        location.hash = HOME_ROUTE;
+      }
+    }
+
+    function routeToProject(targetName, tab = state.tab) {
+      const next = detailRoute(targetName, tab);
+      if (location.hash === next) {
+        applyRoute();
+      } else {
+        location.hash = next;
+      }
+    }
+
+    function applyRoute() {
+      const route = parseRoute();
+      if (route.view === "home") {
+        state.selected = null;
+        state.selectedPlayer = "";
+        $("detailView").classList.add("hidden");
+        $("homeView").classList.remove("hidden");
+        return;
+      }
+      const server = state.servers.find((item) => item.targetName === route.targetName);
+      if (!server) {
+        routeHome();
+        return;
+      }
+      const changedProject = state.selected?.targetName !== server.targetName;
+      state.selected = server;
+      if (changedProject) {
+        state.selectedPlayer = "";
+      }
       $("homeView").classList.add("hidden");
       $("detailView").classList.remove("hidden");
-      setTab("status");
       renderDetail();
+      const routedTab = route.searchParams.get("tab") || "status";
+      setTab(routedTab, { updateRoute: false });
     }
 
     function renderDetail() {
@@ -931,9 +983,8 @@ PANEL_HTML = r"""<!doctype html>
       await api("/api/servers/delete", { method: "POST", body: JSON.stringify({ targetName }) });
       toast(`已删除项目：${label}`);
       if (state.selected?.targetName === targetName) {
-        $("detailView").classList.add("hidden");
-        $("homeView").classList.remove("hidden");
         state.selected = null;
+        routeHome();
       }
       await refresh();
     }
@@ -1179,10 +1230,18 @@ PANEL_HTML = r"""<!doctype html>
       await loadWorlds();
     }
 
-    function setTab(tab) {
-      state.tab = tab;
-      document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
-      ["Status", "Logs", "Properties", "Players", "Mods", "Worlds"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", tab !== name.toLowerCase()));
+    function setTab(tab, options = { updateRoute: true }) {
+      const cleanTab = normalizeTab(tab);
+      if (options.updateRoute && state.selected) {
+        const next = detailRoute(state.selected.targetName, cleanTab);
+        if (location.hash !== next) {
+          location.hash = next;
+          return;
+        }
+      }
+      state.tab = cleanTab;
+      document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === cleanTab));
+      ["Status", "Logs", "Properties", "Players", "Mods", "Worlds"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", cleanTab !== name.toLowerCase()));
       refreshVisibleTab();
     }
 
@@ -1270,7 +1329,7 @@ PANEL_HTML = r"""<!doctype html>
     $("acceptEula").onchange = updateCreateButton;
     $("refresh").onclick = () => runAction(refresh);
     $("showInternalProjects").onchange = () => { state.showInternal = $("showInternalProjects").checked; runAction(refresh); };
-    $("backHome").onclick = () => { $("detailView").classList.add("hidden"); $("homeView").classList.remove("hidden"); state.selected = null; };
+    $("backHome").onclick = () => routeHome();
     $("detailStart").onclick = () => state.selected && runAction(() => startServer(state.selected.targetName));
     $("detailStop").onclick = () => state.selected && runAction(() => stopServer(state.selected.targetName));
     $("detailDelete").onclick = () => state.selected && runAction(() => deleteProject(state.selected.targetName, state.selected.name));
@@ -1282,6 +1341,7 @@ PANEL_HTML = r"""<!doctype html>
     $("consoleCommand").addEventListener("input", () => refreshCommandSuggestions().catch(() => {}));
     $("consoleCommand").addEventListener("keydown", (event) => { if (event.key === "Enter") runAction(sendCommand); if (event.key === "Escape") $("commandSuggestions").classList.add("hidden"); });
     document.querySelectorAll(".tab").forEach((button) => button.onclick = () => setTab(button.dataset.tab));
+    window.addEventListener("hashchange", () => applyRoute());
     setInterval(() => refresh().catch(() => {}), 5000);
     setInterval(() => refreshMetrics().catch(() => {}), 4000);
     setInterval(() => refreshLogs().catch(() => {}), 2000);
@@ -1289,6 +1349,7 @@ PANEL_HTML = r"""<!doctype html>
     setInterval(() => loadMods().catch(() => {}), 8000);
     setInterval(() => loadWorlds().catch(() => {}), 8000);
     updateCreateButton();
+    if (!location.hash) location.hash = HOME_ROUTE;
     refresh().catch((error) => toast(error.message));
   </script>
   <script type="application/json" id="legacyPanelScript">
