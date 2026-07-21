@@ -2434,6 +2434,13 @@ class Pack2ServeCoreTests(unittest.TestCase):
         self.assertIn('快捷栏', PANEL_HTML)
         self.assertIn('item-tooltip', PANEL_HTML)
         self.assertIn("/api/servers/player-inventory", PANEL_HTML)
+        self.assertIn("function reconcileInventoryPanel", PANEL_HTML)
+        self.assertIn("function startInventoryAutoRefresh", PANEL_HTML)
+        self.assertIn("setInterval(() => loadPlayerInventory({ auto: true })", PANEL_HTML)
+        self.assertIn("10000", PANEL_HTML)
+        self.assertIn("data-slot-key", PANEL_HTML)
+        self.assertIn("data-signature", PANEL_HTML)
+        self.assertIn("updateInventoryLoadingState", PANEL_HTML)
 
     def test_panel_web_lifecycle_cleans_stale_processes_and_shutdowns_on_exit(self) -> None:
         service = Mock()

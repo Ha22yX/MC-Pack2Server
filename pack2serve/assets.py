@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 _ICON_CACHE: dict[tuple[str, str, str, str], str | None] = {}
+_ARCHIVE_NAMES_CACHE: dict[tuple[str, int, int], set[str]] = {}
 
 
 def resolve_item_icon_data_url(server_dir: Path, item_id: str) -> str | None:
@@ -114,24 +115,47 @@ def _minecraft_version(server_dir: Path) -> str:
 
 def _resolve_item_icon_from_archive(archive_path: Path, namespace: str, item_name: str) -> str | None:
     try:
+        names = _archive_names(archive_path)
+        model_path = f"assets/{namespace}/models/item/{item_name}.json"
+        direct_match = next((path for path in _candidate_texture_paths(namespace, item_name) if path in names), "")
+        suffix = f"/{item_name}.png"
+        loose_match = ""
+        if not direct_match and model_path not in names:
+            loose_match = next(
+                (
+                    name
+                    for name in sorted(names)
+                    if name.startswith(f"assets/{namespace}/") and "/textures/" in name and name.endswith(suffix)
+                ),
+                "",
+            )
+        if model_path not in names and not direct_match and not loose_match:
+            return None
         with zipfile.ZipFile(archive_path) as archive:
-            names = set(archive.namelist())
-            model_path = f"assets/{namespace}/models/item/{item_name}.json"
             if model_path in names:
                 for texture in _textures_from_model(archive, model_path):
                     texture_path = _texture_reference_to_path(texture)
                     if texture_path in names:
                         return _png_data_url(archive.read(texture_path))
-            for direct in _candidate_texture_paths(namespace, item_name):
-                if direct in names:
-                    return _png_data_url(archive.read(direct))
-            suffix = f"/{item_name}.png"
-            for name in sorted(names):
-                if name.startswith(f"assets/{namespace}/") and "/textures/" in name and name.endswith(suffix):
-                    return _png_data_url(archive.read(name))
+            if direct_match:
+                return _png_data_url(archive.read(direct_match))
+            if loose_match:
+                return _png_data_url(archive.read(loose_match))
     except (OSError, zipfile.BadZipFile, json.JSONDecodeError, UnicodeDecodeError, KeyError):
         return None
     return None
+
+
+def _archive_names(archive_path: Path) -> set[str]:
+    stat = archive_path.stat()
+    key = (str(archive_path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _ARCHIVE_NAMES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    with zipfile.ZipFile(archive_path) as archive:
+        names = set(archive.namelist())
+    _ARCHIVE_NAMES_CACHE[key] = names
+    return names
 
 
 def _resolve_item_icon_from_directory(root: Path, namespace: str, item_name: str) -> str | None:

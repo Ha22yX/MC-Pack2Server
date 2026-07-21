@@ -625,6 +625,7 @@ PANEL_HTML = r"""<!doctype html>
     .player-profile { display: grid; grid-template-columns: 72px 1fr; gap: 12px; align-items: start; margin-bottom: 12px; }
     .player-skin { width: 64px; height: 64px; border-radius: 8px; image-rendering: pixelated; background: #e4e1d7; }
     .inventory-panel { margin-top: 14px; display: grid; gap: 12px; }
+    .inventory-panel.loading .inventory-layout { outline: 2px solid rgb(22 114 95 / .18); outline-offset: 2px; }
     .inventory-layout {
       display: grid;
       gap: 12px;
@@ -981,7 +982,7 @@ PANEL_HTML = r"""<!doctype html>
     const VALID_TABS = new Set(["status", "logs", "properties", "players", "mods", "worlds", "files"]);
     const HOME_ROUTE = "#/projects";
     const ACTIVE_JOB_STORAGE_KEY = "pack2serve.activeJobId";
-    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], onlinePlayers: [], offlinePlayers: [], selectedPlayer: "", selectedPlayerSource: "online", playerInventory: null, inventoryLoading: false, creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
+    const state = { servers: [], selected: null, tab: "status", jobId: "", jobTimer: null, showInternal: false, players: [], onlinePlayers: [], offlinePlayers: [], selectedPlayer: "", selectedPlayerSource: "online", playerInventory: null, inventoryLoading: false, inventoryAutoTimer: null, renderedPlayerKey: "", creatingProject: false, filePath: "", logPinnedToBottom: true, pendingPlayerAction: null };
 
     async function api(path, options = {}) {
       const headers = options.body instanceof FormData ? {} : { "Content-Type": "application/json" };
@@ -1098,6 +1099,9 @@ PANEL_HTML = r"""<!doctype html>
       if (route.view === "home") {
         state.selected = null;
         state.selectedPlayer = "";
+        state.playerInventory = null;
+        state.renderedPlayerKey = "";
+        stopInventoryAutoRefresh();
         $("detailView").classList.add("hidden");
         $("homeView").classList.remove("hidden");
         return;
@@ -1111,6 +1115,9 @@ PANEL_HTML = r"""<!doctype html>
       state.selected = server;
       if (changedProject) {
         state.selectedPlayer = "";
+        state.playerInventory = null;
+        state.renderedPlayerKey = "";
+        stopInventoryAutoRefresh();
         state.filePath = "";
       }
       $("homeView").classList.add("hidden");
@@ -1290,7 +1297,7 @@ PANEL_HTML = r"""<!doctype html>
       state.players = [...state.onlinePlayers, ...state.offlinePlayers];
       $("onlinePlayersList").innerHTML = state.onlinePlayers.map((player) => playerRow(player, "online")).join("") || `<div class="subtle">当前没有在线玩家。</div>`;
       $("offlinePlayersList").innerHTML = state.offlinePlayers.map((player) => playerRow(player, "offline")).join("") || `<div class="subtle">当前世界没有可读取的离线 playerdata。</div>`;
-      renderPlayerDetail();
+      refreshSelectedPlayerDetail();
     }
 
     function playerRow(player, source) {
@@ -1302,28 +1309,58 @@ PANEL_HTML = r"""<!doctype html>
     }
 
     function selectPlayer(name, source = "online") {
+      const nextKey = `${source}:${name}`;
+      const changedPlayer = state.renderedPlayerKey !== nextKey;
       state.selectedPlayer = name;
       state.selectedPlayerSource = source;
-      state.playerInventory = null;
+      if (changedPlayer) state.playerInventory = null;
       state.inventoryLoading = false;
-      renderPlayerDetail();
+      renderPlayerDetail({ force: true });
       if (source === "online") runAction(() => playerAction("probe", { player: name }));
-      runAction(() => loadPlayerInventory());
+      runAction(() => loadPlayerInventory({ force: true }));
+      startInventoryAutoRefresh();
     }
 
-    function renderPlayerDetail() {
+    function refreshSelectedPlayerDetail() {
+      const player = selectedPlayerRecord();
+      if (!player) {
+        state.renderedPlayerKey = "";
+        stopInventoryAutoRefresh();
+        renderPlayerDetail({ force: true });
+        return;
+      }
+      const key = `${state.selectedPlayerSource}:${state.selectedPlayer}`;
+      if (state.renderedPlayerKey !== key || !$("playerProfileName")) {
+        renderPlayerDetail({ force: true });
+      } else {
+        updatePlayerDetailChrome(player);
+      }
+    }
+
+    function renderPlayerDetail({ force = false } = {}) {
       const player = selectedPlayerRecord();
       if (!player) {
         $("playerDetail").innerHTML = `<div class="subtle">点击玩家查看位置、朝向、皮肤、背包和管理操作。</div>`;
         return;
       }
+      const key = `${state.selectedPlayerSource}:${state.selectedPlayer}`;
+      if (!force && state.renderedPlayerKey === key && $("playerProfileName")) {
+        updatePlayerDetailChrome(player);
+        return;
+      }
+      state.renderedPlayerKey = key;
       const pos = formatVector(player.position, "等待探测");
       const rot = formatRotation(player.rotation, "等待探测");
       const isOnline = state.selectedPlayerSource === "online";
-      const inventoryButton = `<button class="secondary" ${state.inventoryLoading ? "disabled" : ""} onclick="runAction(() => loadPlayerInventory())">${state.inventoryLoading ? "读取中" : "查看背包"}</button>`;
+      const inventoryButton = `<button class="secondary" id="inventoryLoadButton" ${state.inventoryLoading ? "disabled" : ""} onclick="runAction(() => loadPlayerInventory())">${state.inventoryLoading ? "读取中" : "查看背包"}</button>`;
       $("playerDetail").innerHTML = `
-        <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3>${escapeHtml(player.name)}</h3><div class="subtle">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
-        <div class="player-detail-grid">${metricCard("位置", pos)}${metricCard("朝向", rot)}${metricCard("UUID", player.uuid || "在线探针")}${metricCard("背包", inventorySummary())}</div>
+        <div class="player-profile"><img class="player-skin" src="${escapeAttr(player.skinUrl)}" alt=""><div><h3 id="playerProfileName">${escapeHtml(player.name)}</h3><div class="subtle" id="playerProfileMeta">模式 ${escapeHtml(player.gameMode)} / 状态 ${escapeHtml(player.status)}</div></div></div>
+        <div class="player-detail-grid">
+          ${metricCardWithId("位置", pos, "playerPositionMetric")}
+          ${metricCardWithId("朝向", rot, "playerRotationMetric")}
+          ${metricCardWithId("UUID", player.uuid || "在线探针", "playerUuidMetric")}
+          ${metricCardWithId("背包", inventorySummary(), "inventorySummaryValue")}
+        </div>
         ${isOnline ? `<div class="card-actions">
           <button class="secondary" onclick="runAction(() => playerAction('probe', { player: '${escapeAttr(player.name)}' }))">刷新状态</button>
           ${inventoryButton}
@@ -1334,7 +1371,23 @@ PANEL_HTML = r"""<!doctype html>
           <button class="danger" onclick="runAction(() => playerAction('kill', { player: '${escapeAttr(player.name)}' }))">杀死</button>
           <button class="danger" onclick="runAction(() => playerAction('clear', { player: '${escapeAttr(player.name)}' }))">清空背包</button>
         </div>` : `<div class="card-actions">${inventoryButton}</div>`}
-        <div class="inventory-panel">${renderInventoryPanel()}</div>`;
+        <div class="inventory-panel" id="inventoryPanel">${renderInventoryPanel()}</div>`;
+      updateInventoryLoadingState();
+    }
+
+    function updatePlayerDetailChrome(player) {
+      if (!$("playerProfileName")) return;
+      $("playerProfileName").textContent = player.name;
+      $("playerProfileMeta").textContent = `模式 ${player.gameMode} / 状态 ${player.status}`;
+      $("playerPositionMetric").textContent = formatVector(player.position, "等待探测");
+      $("playerRotationMetric").textContent = formatRotation(player.rotation, "等待探测");
+      $("playerUuidMetric").textContent = player.uuid || "在线探针";
+      updateInventorySummary();
+      updateInventoryLoadingState();
+    }
+
+    function metricCardWithId(label, value, id) {
+      return `<div class="mini-card"><span class="subtle">${escapeHtml(label)}</span><strong id="${escapeHtml(id)}">${escapeHtml(value)}</strong></div>`;
     }
 
     function selectedPlayerRecord() {
@@ -1342,19 +1395,49 @@ PANEL_HTML = r"""<!doctype html>
       return list.find((item) => (item.uuid || item.name) === state.selectedPlayer);
     }
 
-    async function loadPlayerInventory() {
+    async function loadPlayerInventory({ auto = false, force = false } = {}) {
       if (!state.selected || !state.selectedPlayer) return;
       if (state.inventoryLoading) return;
+      if (auto && state.tab !== "players") return;
       state.inventoryLoading = true;
-      renderPlayerDetail();
+      updateInventoryLoadingState();
       try {
+        const requestKey = `${state.selected.targetName}:${state.selectedPlayerSource}:${state.selectedPlayer}`;
         const payload = await api(`/api/servers/player-inventory?targetName=${encodeURIComponent(state.selected.targetName)}&player=${encodeURIComponent(state.selectedPlayer)}&source=${encodeURIComponent(state.selectedPlayerSource)}`);
+        if (requestKey !== `${state.selected?.targetName}:${state.selectedPlayerSource}:${state.selectedPlayer}`) return;
         state.playerInventory = payload.inventory;
-        if (payload.inventory.status === "probing") setTimeout(() => loadPlayerInventory().catch(() => {}), 700);
+        reconcileInventoryPanel(payload.inventory, { force });
+        updateInventorySummary();
+        if (payload.inventory.status === "probing") setTimeout(() => loadPlayerInventory({ force }).catch(() => {}), 700);
       } finally {
         state.inventoryLoading = false;
-        renderPlayerDetail();
+        updateInventoryLoadingState();
       }
+    }
+
+    function startInventoryAutoRefresh() {
+      stopInventoryAutoRefresh();
+      state.inventoryAutoTimer = setInterval(() => loadPlayerInventory({ auto: true }).catch(() => {}), 10000);
+    }
+
+    function stopInventoryAutoRefresh() {
+      if (state.inventoryAutoTimer) clearInterval(state.inventoryAutoTimer);
+      state.inventoryAutoTimer = null;
+    }
+
+    function updateInventoryLoadingState() {
+      const button = $("inventoryLoadButton");
+      if (button) {
+        button.disabled = state.inventoryLoading;
+        button.textContent = state.inventoryLoading ? "读取中" : "查看背包";
+      }
+      const panel = $("inventoryPanel");
+      if (panel) panel.classList.toggle("loading", state.inventoryLoading);
+    }
+
+    function updateInventorySummary() {
+      const summary = $("inventorySummaryValue");
+      if (summary) summary.textContent = inventorySummary();
     }
 
     function inventorySummary() {
@@ -1364,6 +1447,35 @@ PANEL_HTML = r"""<!doctype html>
       if (inventory.status === "probing") return "探针读取中";
       const count = [...(inventory.inventory || []), ...(inventory.enderChest || [])].filter((item) => item && item.id).length;
       return `${count} 项`;
+    }
+
+    function reconcileInventoryPanel(inventory, { force = false } = {}) {
+      const panel = $("inventoryPanel");
+      if (!panel) return;
+      const nextHtml = renderInventoryPanel();
+      if (force || !panel.querySelector(".inventory-layout") || inventory?.status !== "ready") {
+        panel.innerHTML = nextHtml;
+        return;
+      }
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = nextHtml;
+      const currentSlots = Array.from(panel.querySelectorAll("[data-slot-key]"));
+      const nextSlots = Array.from(wrapper.querySelectorAll("[data-slot-key]"));
+      const currentKeys = currentSlots.map((slot) => slot.dataset.slotKey).join("|");
+      const nextKeys = nextSlots.map((slot) => slot.dataset.slotKey).join("|");
+      if (currentKeys !== nextKeys) {
+        panel.innerHTML = nextHtml;
+        return;
+      }
+      const currentByKey = new Map(currentSlots.map((slot) => [slot.dataset.slotKey, slot]));
+      nextSlots.forEach((nextSlot) => {
+        const current = currentByKey.get(nextSlot.dataset.slotKey);
+        if (current && current.dataset.signature !== nextSlot.dataset.signature) {
+          current.className = nextSlot.className;
+          current.dataset.signature = nextSlot.dataset.signature;
+          current.innerHTML = nextSlot.innerHTML;
+        }
+      });
     }
 
     function renderInventoryPanel() {
@@ -1400,7 +1512,7 @@ PANEL_HTML = r"""<!doctype html>
 
     function slotGrid(items, size, section) {
       const bySlot = new Map((items || []).map((item, index) => [slotIndex(item, section, index), item]));
-      return Array.from({ length: size }, (_, index) => itemSlot(bySlot.get(index))).join("");
+      return Array.from({ length: size }, (_, index) => itemSlot(bySlot.get(index), `${section}:${index}`)).join("");
     }
 
     function slotIndex(item, section, index) {
@@ -1412,12 +1524,32 @@ PANEL_HTML = r"""<!doctype html>
       return slot >= 0 ? slot : index;
     }
 
-    function itemSlot(item) {
-      if (!item || !item.id) return `<div class="item-slot"></div>`;
+    function itemSlot(item, slotKey) {
+      const signature = slotSignature(item);
+      if (!item || !item.id) return `<div class="item-slot" data-slot-key="${escapeHtml(slotKey)}" data-signature="${escapeHtml(signature)}"></div>`;
       const icon = item.iconDataUrl ? `<img src="${escapeAttr(item.iconDataUrl)}" alt="">` : `<div class="item-placeholder">${escapeHtml(item.id.split(":")[0].slice(0, 2).toUpperCase())}</div>`;
       const count = Number(item.count || 0) > 1 ? `<span class="item-count">${escapeHtml(item.count)}</span>` : "";
       const tooltip = (item.tooltip || [item.id]).map((line) => `<div>${escapeHtml(line)}</div>`).join("");
-      return `<div class="item-slot">${icon}${count}<div class="item-tooltip">${tooltip}</div></div>`;
+      return `<div class="item-slot" data-slot-key="${escapeHtml(slotKey)}" data-signature="${escapeHtml(signature)}">${icon}${count}<div class="item-tooltip">${tooltip}</div></div>`;
+    }
+
+    function slotSignature(item) {
+      if (!item || !item.id) return "empty";
+      return [
+        item.id || "",
+        item.count || 0,
+        item.slot ?? "",
+        item.damage || 0,
+        item.iconDataUrl ? "icon" : "no-icon",
+        simpleHash(item.raw || "")
+      ].join("|");
+    }
+
+    function simpleHash(value) {
+      let hash = 0;
+      const text = String(value || "");
+      for (let index = 0; index < text.length; index += 1) hash = ((hash << 5) - hash + text.charCodeAt(index)) | 0;
+      return String(hash);
     }
 
     function formatCoordinate(value) {
@@ -1639,6 +1771,11 @@ PANEL_HTML = r"""<!doctype html>
         }
       }
       state.tab = cleanTab;
+      if (cleanTab === "players" && state.selectedPlayer) {
+        startInventoryAutoRefresh();
+      } else if (cleanTab !== "players") {
+        stopInventoryAutoRefresh();
+      }
       document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === cleanTab));
       ["Status", "Logs", "Properties", "Players", "Mods", "Worlds", "Files"].forEach((name) => $(`tab${name}`).classList.toggle("hidden", cleanTab !== name.toLowerCase()));
       refreshVisibleTab();
