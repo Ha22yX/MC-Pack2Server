@@ -1373,27 +1373,96 @@ def _players_from_log(log_path: Path) -> dict[str, dict[str, object]]:
 
 def _offline_players_from_playerdata(server_dir: Path) -> list[dict[str, object]]:
     players: list[dict[str, object]] = []
+    name_cache = _player_name_cache(server_dir)
     for path in sorted(_playerdata_dir(server_dir).glob("*.dat")):
         player_uuid = path.stem
         if not _is_safe_player_uuid(player_uuid):
             continue
+        cached = name_cache.get(player_uuid.lower(), {})
+        display_name = str(cached.get("name") or player_uuid)
+        name_source = str(cached.get("source") or "uuid")
         stat = path.stat()
         players.append(
             {
-                "name": player_uuid,
+                "name": display_name,
                 "uuid": player_uuid,
                 "status": "offline",
                 "gameMode": "unknown",
                 "position": None,
                 "rotation": None,
                 "respawnPoint": None,
-                "skinUrl": f"https://minotar.net/avatar/{player_uuid}/64",
+                "skinUrl": f"https://minotar.net/avatar/{display_name}/64",
                 "inventory": [],
                 "source": "playerdata",
+                "nameSource": name_source,
                 "lastModified": int(stat.st_mtime),
             }
         )
     return players
+
+
+def _player_name_cache(server_dir: Path) -> dict[str, dict[str, str]]:
+    cache: dict[str, dict[str, str]] = {}
+    _merge_player_names_from_usercache(cache, server_dir / "usercache.json")
+    _merge_player_names_from_usernamecache(cache, server_dir / "usernamecache.json")
+    for filename in ("ops.json", "whitelist.json", "banned-players.json"):
+        _merge_player_names_from_profile_list(cache, server_dir / filename)
+    _merge_player_names_from_logs(cache, server_dir / "logs")
+    return cache
+
+
+def _cache_player_name(cache: dict[str, dict[str, str]], player_uuid: object, name: object, source: str) -> None:
+    uuid_value = str(player_uuid or "").strip().lower()
+    name_value = str(name or "").strip()
+    if not _is_safe_player_uuid(uuid_value) or not re.fullmatch(r"[A-Za-z0-9_]{1,16}", name_value):
+        return
+    cache.setdefault(uuid_value, {"name": name_value, "source": source})
+
+
+def _merge_player_names_from_usercache(cache: dict[str, dict[str, str]], path: Path) -> None:
+    data = _read_json_file(path)
+    if not isinstance(data, list):
+        return
+    for entry in data:
+        if isinstance(entry, dict):
+            _cache_player_name(cache, entry.get("uuid"), entry.get("name"), path.name)
+
+
+def _merge_player_names_from_usernamecache(cache: dict[str, dict[str, str]], path: Path) -> None:
+    data = _read_json_file(path)
+    if isinstance(data, dict):
+        for player_uuid, name in data.items():
+            _cache_player_name(cache, player_uuid, name, path.name)
+
+
+def _merge_player_names_from_profile_list(cache: dict[str, dict[str, str]], path: Path) -> None:
+    data = _read_json_file(path)
+    if not isinstance(data, list):
+        return
+    for entry in data:
+        if isinstance(entry, dict):
+            _cache_player_name(cache, entry.get("uuid"), entry.get("name"), path.name)
+
+
+def _merge_player_names_from_logs(cache: dict[str, dict[str, str]], logs_dir: Path) -> None:
+    if not logs_dir.exists():
+        return
+    for path in sorted(logs_dir.glob("*.log"))[-8:]:
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r"UUID of player ([A-Za-z0-9_]{1,16}) is ([0-9a-fA-F-]{36})", content):
+            _cache_player_name(cache, match.group(2), match.group(1), "logs")
+
+
+def _read_json_file(path: Path) -> object:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def _inventory_compatibility(server_dir: Path) -> dict[str, object]:
