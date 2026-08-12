@@ -100,6 +100,7 @@ KNOWN_CLIENT_ONLY_MOD_IDS = {
     "legacyskins",
     "legendary-tooltips",
     "mcwifipnp",
+    "mobsplus",
     "modmenu",
     "monocle",
     "moremusic",
@@ -121,6 +122,21 @@ KNOWN_CLIENT_ONLY_MOD_IDS = {
     "xaeros-minimap",
     "xaeros-world-map",
 }
+
+
+# Epic Fight addon mod IDs that are client-only or reference client classes
+# (kept outside the set literal for easier scanning/grepping)
+_CLIENT_EPICFIGHT_ADDONS = {
+    "epic-fight-mobs-plus",
+    "epic_fight_mobs_plus",
+    "epicfight-extra",
+    "epicfight_awaken",
+    "epicfightinvincible",
+    "epic-fight-invincible",
+    "epicfightnightfall",
+    "epicfightresurrection",
+}
+KNOWN_CLIENT_ONLY_MOD_IDS.update(_CLIENT_EPICFIGHT_ADDONS)
 
 
 class ServerBuilder:
