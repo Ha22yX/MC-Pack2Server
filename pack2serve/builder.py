@@ -188,6 +188,11 @@ class ServerBuilder:
             copied.extend(remote_copied)
         self._progress({"type": "download-complete", "total": len(pack.remote_files), "completed": len(pack.remote_files)})
 
+        self._progress({"type": "scan-client-mods-start", "message": "扫描并隔离声明为客户端的模组"})
+        scan_copied = self._scan_and_isolate_client_only_mods(target)
+        copied.extend(scan_copied)
+        self._progress({"type": "scan-client-mods-complete", "copied": len(scan_copied), "message": f"扫描完成，隔离 {len(scan_copied)} 个客户端模组"})
+
         report = BuildReport(
             pack=pack,
             target_dir=target,
@@ -365,6 +370,27 @@ class ServerBuilder:
                 return True
         candidates = [remote.target_path, filename or "", remote.slug or "", remote.display_name or ""]
         return any(_matches_client_only_mod(candidate) for candidate in candidates)
+
+    def _scan_and_isolate_client_only_mods(self, target: Path) -> list[CopiedOverride]:
+        """扫描 mods/ 下的 jar，把声明为 client-only 的模组隔离到 _client-overrides/mods/。"""
+        mods_dir = target / "mods"
+        if not mods_dir.exists():
+            return []
+        copied: list[CopiedOverride] = []
+        for mod_file in sorted(mods_dir.glob("*.jar")):
+            if _jar_declares_client_only(mod_file):
+                destination = target / "_client-overrides" / "mods" / mod_file.name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(mod_file), str(destination))
+                copied.append(
+                    CopiedOverride(
+                        source=f"mods/{mod_file.name}",
+                        destination=str(destination.relative_to(target)).replace("\\", "/"),
+                        classification="client-remote-isolated",
+                        size=destination.stat().st_size,
+                    )
+                )
+        return copied
 
     def _copy_overrides(
         self, archive: zipfile.ZipFile, override_root: str, target: Path
@@ -607,6 +633,37 @@ def _copy_directory_contents(
             )
         )
     return copied
+
+
+def _jar_declares_client_only(jar_path: Path) -> bool:
+    """检查 jar 内的 mods.toml / fabric.mod.json 是否声明为仅客户端。"""
+    try:
+        with zipfile.ZipFile(jar_path, "r") as jar:
+            # Forge: mods.toml
+            if "META-INF/mods.toml" in jar.namelist():
+                try:
+                    content = jar.read("META-INF/mods.toml").decode("utf-8", errors="replace")
+                    lowered = content.lower()
+                    if "clientsideonly" in lowered and re.search(r"clientsideonly\s*=\s*true", lowered):
+                        return True
+                    if re.search(r'\bside\s*=\s*"client"', content):
+                        return True
+                except Exception:
+                    pass
+            # Fabric: fabric.mod.json
+            if "fabric.mod.json" in jar.namelist():
+                try:
+                    data = json.loads(jar.read("fabric.mod.json").decode("utf-8", errors="replace"))
+                    env = data.get("environment", "")
+                    if isinstance(env, str) and env.lower() == "client":
+                        return True
+                    if isinstance(env, dict) and env.get("", "").lower() == "client":
+                        return True
+                except Exception:
+                    pass
+    except (zipfile.BadZipFile, OSError):
+        pass
+    return False
 
 
 def _matches_client_only_mod(value: str) -> bool:

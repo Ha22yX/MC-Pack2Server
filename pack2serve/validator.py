@@ -35,7 +35,7 @@ class ServerValidator:
         *,
         command: list[str] | None = None,
         timeout_seconds: int = 120,
-        max_client_repair_attempts: int = 3,
+        max_client_repair_attempts: int = 10,
     ) -> ValidationResult:
         root = Path(server_dir)
         ensure_start_script_uses_nogui(root)
@@ -240,7 +240,10 @@ def _looks_like_invalid_dist_client_crash(output: str) -> bool:
 def _invalid_dist_mod_files(root: Path, output: str) -> list[Path]:
     candidates: list[Path] = []
     for text in [output, *_recent_crash_report_texts(root)]:
-        for block in re.split(r"(?im)^-- Mod loading issue for:", text):
+        # Crash reports use "-- MOD <modid> --" blocks (Forge 1.20) or
+        # "-- Mod loading issue for:" blocks (older/other loaders).
+        blocks = re.split(r"(?im)^-- (?:Mod loading issue for:|MOD .*? --)\s*$", text)
+        for block in blocks:
             if not _looks_like_invalid_dist_client_crash(block):
                 continue
             for match in re.finditer(r"(?im)^\s*Mod file:\s*(.+?\.jar)\s*$", block):
