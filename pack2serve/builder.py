@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
@@ -117,11 +119,13 @@ class ServerBuilder:
         download_remote: bool = False,
         curseforge_providers: list[CurseForgeTemplateMirrorProvider] | None = None,
         progress_callback: Callable[[dict[str, object]], None] | None = None,
+        download_workers: int = 8,
     ):
         self.cache_dir = Path(cache_dir)
         self.download_remote = download_remote
         self.curseforge_providers = curseforge_providers or []
         self.progress_callback = progress_callback
+        self.download_workers = max(1, download_workers)
 
     def build(self, pack_path: str | Path, target_dir: str | Path) -> BuildReport:
         pack = parse_modpack(pack_path)
@@ -184,45 +188,55 @@ class ServerBuilder:
         actions: list[ManualAction] = []
         copied: list[CopiedOverride] = []
         total = len(remote_files)
-        for index, remote in enumerate(remote_files, start=1):
-            self._progress(
-                {
-                    "type": "download-item-start",
-                    "completed": index - 1,
-                    "total": total,
-                    "current": _remote_progress_name(remote),
-                }
-            )
+        completed = 0
+        lock = threading.Lock()
+
+        def _download_one(remote: RemoteFile) -> None:
+            nonlocal completed
+            with lock:
+                self._progress(
+                    {
+                        "type": "download-item-start",
+                        "completed": completed,
+                        "total": total,
+                        "current": _remote_progress_name(remote),
+                    }
+                )
             try:
                 artifact = provider.resolve_and_cache(remote)
                 destination, classification = self._remote_destination(remote, target)
                 copy_cached_artifact(artifact, destination)
                 if classification == "client-remote-isolated":
-                    copied.append(
-                        CopiedOverride(
-                            source=f"{remote.provider}:{remote.target_path}",
-                            destination=str(destination.relative_to(target)).replace("\\", "/"),
-                            classification=classification,
-                            size=artifact.path.stat().st_size,
-                        )
+                    copied_item = CopiedOverride(
+                        source=f"{remote.provider}:{remote.target_path}",
+                        destination=str(destination.relative_to(target)).replace("\\", "/"),
+                        classification=classification,
+                        size=artifact.path.stat().st_size,
                     )
+                    with lock:
+                        copied.append(copied_item)
             except DownloadError as exc:
-                actions.append(
-                    ManualAction(
-                        type="download-failed",
-                        message=str(exc),
-                        details={"targetPath": remote.target_path, "provider": remote.provider},
-                    )
+                action = ManualAction(
+                    type="download-failed",
+                    message=str(exc),
+                    details={"targetPath": remote.target_path, "provider": remote.provider},
                 )
+                with lock:
+                    actions.append(action)
             finally:
-                self._progress(
-                    {
-                        "type": "download-item-complete",
-                        "completed": index,
-                        "total": total,
-                        "current": _remote_progress_name(remote),
-                    }
-                )
+                with lock:
+                    completed += 1
+                    self._progress(
+                        {
+                            "type": "download-item-complete",
+                            "completed": completed,
+                            "total": total,
+                            "current": _remote_progress_name(remote),
+                        }
+                    )
+
+        with ThreadPoolExecutor(max_workers=self.download_workers) as executor:
+            list(executor.map(_download_one, remote_files))
         return actions, copied
 
     def _resolve_curseforge_files(
@@ -238,56 +252,67 @@ class ServerBuilder:
         provider_counts: dict[str, int] = {}
         resolved_count = 0
         total = len(remote_files)
-        for index, remote in enumerate(remote_files, start=1):
-            self._progress(
-                {
-                    "type": "download-item-start",
-                    "completed": index - 1,
-                    "total": total,
-                    "current": _remote_progress_name(remote),
-                }
-            )
+        completed = 0
+        lock = threading.Lock()
+
+        def _download_one(remote: RemoteFile) -> None:
+            nonlocal completed, resolved_count
+            with lock:
+                self._progress(
+                    {
+                        "type": "download-item-start",
+                        "completed": completed,
+                        "total": total,
+                        "current": _remote_progress_name(remote),
+                    }
+                )
             try:
                 artifact = resolver.resolve_and_cache(remote)
                 destination, classification = self._curseforge_destination(remote, artifact.path.name, target)
                 copy_cached_artifact(artifact, destination)
                 if classification == "client-remote-isolated":
-                    copied.append(
-                        CopiedOverride(
-                            source=f"{remote.provider}:{remote.project_id}/{remote.file_id}",
-                            destination=str(destination.relative_to(target)).replace("\\", "/"),
-                            classification=classification,
-                            size=artifact.path.stat().st_size,
-                        )
+                    copied_item = CopiedOverride(
+                        source=f"{remote.provider}:{remote.project_id}/{remote.file_id}",
+                        destination=str(destination.relative_to(target)).replace("\\", "/"),
+                        classification=classification,
+                        size=artifact.path.stat().st_size,
                     )
-                resolved_count += 1
-                provider_counts[artifact.provider] = provider_counts.get(artifact.provider, 0) + 1
+                    with lock:
+                        copied.append(copied_item)
+                with lock:
+                    resolved_count += 1
+                    provider_counts[artifact.provider] = provider_counts.get(artifact.provider, 0) + 1
             except CurseForgeResolutionError as exc:
-                actions.append(
-                    ManualAction(
-                        type="missing-curseforge-artifact",
-                        message=(
-                            "This CurseForge file could not be resolved from configured no-key providers. "
-                            "Configure another mirror or upload the jar manually."
-                        ),
-                        details={
-                            "projectID": remote.project_id,
-                            "fileID": remote.file_id,
-                            "required": remote.required,
-                            "slug": remote.slug,
-                            "providerErrors": exc.provider_errors,
-                        },
-                    )
+                action = ManualAction(
+                    type="missing-curseforge-artifact",
+                    message=(
+                        "This CurseForge file could not be resolved from configured no-key providers. "
+                        "Configure another mirror or upload the jar manually."
+                    ),
+                    details={
+                        "projectID": remote.project_id,
+                        "fileID": remote.file_id,
+                        "required": remote.required,
+                        "slug": remote.slug,
+                        "providerErrors": exc.provider_errors,
+                    },
                 )
+                with lock:
+                    actions.append(action)
             finally:
-                self._progress(
-                    {
-                        "type": "download-item-complete",
-                        "completed": index,
-                        "total": total,
-                        "current": _remote_progress_name(remote),
-                    }
-                )
+                with lock:
+                    completed += 1
+                    self._progress(
+                        {
+                            "type": "download-item-complete",
+                            "completed": completed,
+                            "total": total,
+                            "current": _remote_progress_name(remote),
+                        }
+                    )
+
+        with ThreadPoolExecutor(max_workers=self.download_workers) as executor:
+            list(executor.map(_download_one, remote_files))
         return actions, CurseForgeResolutionSummary(
             resolved=resolved_count,
             unresolved=len(actions),

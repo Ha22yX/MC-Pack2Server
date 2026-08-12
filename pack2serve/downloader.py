@@ -348,10 +348,29 @@ def _safe_file_name(file_name: str) -> str:
     return file_name.replace("/", "_").replace("\\", "_")
 
 
+class _HttpsToHttpRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects even when they downgrade from https to http."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return urllib.request.Request(
+            newurl,
+            data=req.data,
+            headers=dict(req.headers),
+            origin_req_host=req.origin_req_host,
+            unverifiable=True,
+            method=req.get_method(),
+        )
+
+
+_opener = urllib.request.build_opener(_HttpsToHttpRedirectHandler)
+
+_DOWNLOAD_TIMEOUT = 60  # seconds for both connection and read
+
+
 def _download(url: str, destination: Path) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "Pack2Serve/0.1.0"})
     try:
-        with urllib.request.urlopen(request, timeout=60) as response, destination.open("wb") as output:
+        with _opener.open(request, timeout=_DOWNLOAD_TIMEOUT) as response, destination.open("wb") as output:
             shutil.copyfileobj(response, output)
     except (urllib.error.URLError, OSError) as exc:
         destination.unlink(missing_ok=True)
@@ -361,7 +380,7 @@ def _download(url: str, destination: Path) -> None:
 def _read_json_url(url: str) -> dict[str, object]:
     request = urllib.request.Request(url, headers={"User-Agent": "Pack2Serve/0.1.0"})
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with _opener.open(request, timeout=_DOWNLOAD_TIMEOUT) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
