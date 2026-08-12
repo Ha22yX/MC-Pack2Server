@@ -78,6 +78,8 @@ class ServerValidator:
                 break
             moved = isolate_invalid_dist_client_mods(root, result.combined_output)
             if not moved:
+                moved = isolate_missing_client_dependency_mods(root, result.combined_output)
+            if not moved:
                 break
             repair_attempts += 1
             repaired.extend(moved)
@@ -227,6 +229,74 @@ def isolate_invalid_dist_client_mods(server_dir: str | Path, output: str = "") -
     if moved:
         _write_client_repair_report(root, moved)
     return moved
+
+
+# Map from known client-only mod IDs to their common Java package prefixes.
+# Used to auto-isolate mods that crash with NoClassDefFoundError because they
+# depend on a client-only Epic Fight / other addon that has already been removed.
+_CLIENT_ONLY_PACKAGE_PREFIXES: dict[str, set[str]] = {
+    "invincible": {"com/p1nero/invincible/", "com.p1nero.invincible."},
+    "epicfightx": {"com/asanginxst/epicfightx/", "com.asanginxst.epicfightx."},
+    "epic_fight_mobs_plus": {"com/", },  # too broad; rely on block parsing instead
+    "goop": {"absolutelyaya/goop/", "absolutelyaya.goop."},
+}
+
+
+def isolate_missing_client_dependency_mods(server_dir: str | Path, output: str = "") -> list[str]:
+    """隔离因依赖客户端模组而报 NoClassDefFoundError/ClassNotFoundException 的模组。"""
+    root = Path(server_dir)
+    mod_files = _missing_client_dependency_mod_files(root, output)
+    moved: list[str] = []
+    for mod_file in mod_files:
+        if not mod_file.exists() or not mod_file.is_file():
+            continue
+        destination = _unique_destination(root / "_client-overrides" / "mods" / mod_file.name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(mod_file), str(destination))
+        relative_move = (
+            f"{_relative_display(mod_file, root)} -> {_relative_display(destination, root)}"
+        )
+        moved.append(relative_move)
+        _mark_build_report_client_isolated(root, mod_file, destination)
+    if moved:
+        _write_client_repair_report(root, moved)
+    return moved
+
+
+def _missing_client_dependency_mod_files(root: Path, output: str) -> list[Path]:
+    candidates: list[Path] = []
+    for text in [output, *_recent_crash_report_texts(root)]:
+        blocks = re.split(r"(?im)^-- (?:Mod loading issue for:|MOD .*? --)\s*$", text)
+        for block in blocks:
+            if not _looks_like_missing_client_dependency_crash(block):
+                continue
+            for match in re.finditer(r"(?im)^\s*Mod file:\s*(.+?\.jar)\s*$", block):
+                resolved = _resolve_reported_mod_path(root, match.group(1))
+                if resolved and _is_path_under(resolved, root / "mods"):
+                    candidates.append(resolved)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def _looks_like_missing_client_dependency_crash(block: str) -> bool:
+    lowered = block.lower()
+    has_missing_class = (
+        "noclassdeffounderror" in lowered or "classnotfoundexception" in lowered
+    )
+    if not has_missing_class:
+        return False
+    for prefixes in _CLIENT_ONLY_PACKAGE_PREFIXES.values():
+        for prefix in prefixes:
+            if prefix.lower() in lowered:
+                return True
+    return False
 
 
 def _looks_like_invalid_dist_client_crash(output: str) -> bool:

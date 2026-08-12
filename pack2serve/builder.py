@@ -67,11 +67,15 @@ CLIENT_FILES = {
 KNOWN_CLIENT_ONLY_MOD_IDS = {
     "better-f3",
     "betterclouds",
+    "better-clouds",
     "betterlockon",
+    "better-lock-on",
     "bhmenu",
     "citresewn",
+    "cit-resewn",
     "clean-tooltips",
     "clearwater",
+    "clear-water",
     "client-tweaks",
     "combatsense",
     "collapsible-groups",
@@ -88,7 +92,10 @@ KNOWN_CLIENT_ONLY_MOD_IDS = {
     "fancy-menu",
     "fancymenu",
     "firstperson",
+    "first-person",
     "goop",
+    "epicgoop",
+    "epic-goop",
     "hide-experimental-warning",
     "hide-key-binding",
     "hide_key_binding",
@@ -101,6 +108,8 @@ KNOWN_CLIENT_ONLY_MOD_IDS = {
     "legendary-tooltips",
     "mcwifipnp",
     "mobsplus",
+    "epic-fight-mobs-plus",
+    "epic_fight_mobs_plus",
     "modmenu",
     "monocle",
     "moremusic",
@@ -112,7 +121,9 @@ KNOWN_CLIENT_ONLY_MOD_IDS = {
     "reeses-sodium-options",
     "rubidium",
     "ryoamiclights",
+    "ryoamic-lights",
     "shulkertooltip",
+    "shulker-tooltip",
     "skinlayers3d",
     "smoothswapping",
     "sodium",
@@ -121,22 +132,26 @@ KNOWN_CLIENT_ONLY_MOD_IDS = {
     "tactical_imbuements",
     "xaeros-minimap",
     "xaeros-world-map",
-}
-
-
-# Epic Fight addon mod IDs that are client-only or reference client classes
-# (kept outside the set literal for easier scanning/grepping)
-_CLIENT_EPICFIGHT_ADDONS = {
-    "epic-fight-mobs-plus",
-    "epic_fight_mobs_plus",
+    # Epic Fight addon ecosystem: many addons inject client classes and are not
+    # safe on dedicated servers. Their dependencies must be isolated together.
     "epicfight-extra",
+    "epicfightx",
+    "epic-fight-extra",
+    "epicfight-awaken",
     "epicfight_awaken",
-    "epicfightinvincible",
-    "epic-fight-invincible",
-    "epicfightnightfall",
+    "epicfight-resurrection",
     "epicfightresurrection",
+    "epic-fight-resurrection",
+    "epicfight-nightfall",
+    "epicfightnightfall",
+    "epic-fight-nightfall",
+    "efn",
+    "nightfall-invade",
+    "nightfall_invade",
+    "invincible",
+    "epic-fight-invincible",
+    "epicfightinvincible",
 }
-KNOWN_CLIENT_ONLY_MOD_IDS.update(_CLIENT_EPICFIGHT_ADDONS)
 
 
 class ServerBuilder:
@@ -372,24 +387,67 @@ class ServerBuilder:
         return any(_matches_client_only_mod(candidate) for candidate in candidates)
 
     def _scan_and_isolate_client_only_mods(self, target: Path) -> list[CopiedOverride]:
-        """扫描 mods/ 下的 jar，把声明为 client-only 的模组隔离到 _client-overrides/mods/。"""
+        """扫描 mods/ 下的 jar，把声明为 client-only 的模组及其依赖者隔离到 _client-overrides/mods/。"""
         mods_dir = target / "mods"
         if not mods_dir.exists():
             return []
-        copied: list[CopiedOverride] = []
+
+        # 收集所有 jar 的元数据：modId -> jar，以及每个 jar 的依赖 modId
+        mod_id_to_jar: dict[str, Path] = {}
+        jar_to_mod_ids: dict[Path, set[str]] = {}
+        jar_to_dependencies: dict[Path, set[str]] = {}
+
         for mod_file in sorted(mods_dir.glob("*.jar")):
+            mod_ids, deps = _read_mod_metadata(mod_file)
+            if not mod_ids:
+                # 无法解析时退化为文件名匹配
+                mod_ids = {_jar_name_to_mod_id(mod_file.name)}
+            jar_to_mod_ids[mod_file] = mod_ids
+            jar_to_dependencies[mod_file] = deps
+            for mod_id in mod_ids:
+                mod_id_to_jar[mod_id] = mod_file
+
+        # 初始 client-only 集合
+        client_only_ids: set[str] = set()
+        for mod_file, mod_ids in jar_to_mod_ids.items():
+            for mod_id in mod_ids:
+                if _is_known_client_only_mod_id(mod_id):
+                    client_only_ids.add(mod_id)
+            # 同时检查 jar 本身是否声明 client-only
             if _jar_declares_client_only(mod_file):
-                destination = target / "_client-overrides" / "mods" / mod_file.name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(mod_file), str(destination))
-                copied.append(
-                    CopiedOverride(
-                        source=f"mods/{mod_file.name}",
-                        destination=str(destination.relative_to(target)).replace("\\", "/"),
-                        classification="client-remote-isolated",
-                        size=destination.stat().st_size,
-                    )
+                client_only_ids.update(mod_ids)
+
+        # 迭代传播：任何硬依赖 client-only 模组的 jar 也视为 client-only
+        changed = True
+        while changed:
+            changed = False
+            for mod_file, deps in jar_to_dependencies.items():
+                if any(dep in client_only_ids for dep in deps):
+                    mod_ids = jar_to_mod_ids[mod_file]
+                    new_ids = mod_ids - client_only_ids
+                    if new_ids:
+                        client_only_ids.update(mod_ids)
+                        changed = True
+
+        jars_to_move: set[Path] = set()
+        for mod_id in client_only_ids:
+            jar = mod_id_to_jar.get(mod_id)
+            if jar and jar.exists():
+                jars_to_move.add(jar)
+
+        copied: list[CopiedOverride] = []
+        for mod_file in sorted(jars_to_move):
+            destination = target / "_client-overrides" / "mods" / mod_file.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(mod_file), str(destination))
+            copied.append(
+                CopiedOverride(
+                    source=f"mods/{mod_file.name}",
+                    destination=str(destination.relative_to(target)).replace("\\", "/"),
+                    classification="client-remote-isolated",
+                    size=destination.stat().st_size,
                 )
+            )
         return copied
 
     def _copy_overrides(
@@ -666,6 +724,70 @@ def _jar_declares_client_only(jar_path: Path) -> bool:
     return False
 
 
+def _read_mod_metadata(jar_path: Path) -> tuple[set[str], set[str]]:
+    """读取 jar 的 mods.toml / fabric.mod.json，返回 (本 jar 的 modId 集合, 依赖 modId 集合)。"""
+    mod_ids: set[str] = set()
+    dependencies: set[str] = set()
+    try:
+        with zipfile.ZipFile(jar_path, "r") as jar:
+            if "META-INF/mods.toml" in jar.namelist():
+                try:
+                    content = jar.read("META-INF/mods.toml").decode("utf-8", errors="replace")
+                    in_mods_section = False
+                    in_deps_section = False
+                    for line in content.splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("[[mods]]"):
+                            in_mods_section = True
+                            in_deps_section = False
+                            continue
+                        if stripped.startswith("[[dependencies."):
+                            in_mods_section = False
+                            in_deps_section = True
+                            continue
+                        if stripped.startswith("[["):
+                            in_mods_section = False
+                            in_deps_section = False
+                            continue
+                        match = re.match(r'(?i)^modId\s*=\s*"([^"]+)"', stripped)
+                        if match:
+                            if in_mods_section:
+                                mod_ids.add(match.group(1))
+                            elif in_deps_section:
+                                dependencies.add(match.group(1))
+                except Exception:
+                    pass
+            if "fabric.mod.json" in jar.namelist():
+                try:
+                    data = json.loads(jar.read("fabric.mod.json").decode("utf-8", errors="replace"))
+                    mod_id = data.get("id")
+                    if mod_id:
+                        mod_ids.add(mod_id)
+                    deps = data.get("depends", {})
+                    if isinstance(deps, dict):
+                        dependencies.update(deps.keys())
+                except Exception:
+                    pass
+    except (zipfile.BadZipFile, OSError):
+        pass
+    dependencies -= mod_ids
+    dependencies -= {"forge", "minecraft", "javafml", "lowcodefml", "mclanguage"}
+    return mod_ids, dependencies
+
+
+def _jar_name_to_mod_id(file_name: str) -> str:
+    """从 jar 文件名猜测 modId（仅用于无法解析元数据时的兜底）。"""
+    name = Path(file_name).stem.lower()
+    # 去掉常见版本后缀
+    name = re.sub(r"[-_](?:forge|fabric|mc|mcversion)?\d+(?:\.\d+)*[a-z]?$", "", name)
+    name = re.sub(r"[-_]\d+(?:\.\d+)+$", "", name)
+    return name.replace("_", "-")
+
+
+def _is_known_client_only_mod_id(mod_id: str) -> bool:
+    return mod_id.lower() in KNOWN_CLIENT_ONLY_MOD_IDS
+
+
 def _matches_client_only_mod(value: str) -> bool:
     normalized = value.lower().replace("\\", "/")
     filename = normalized.rsplit("/", 1)[-1]
@@ -674,15 +796,19 @@ def _matches_client_only_mod(value: str) -> bool:
         .replace(" ", "-")
         .replace("[", "-")
         .replace("]", "-")
+        .replace("【", "-")
+        .replace("】", "-")
         .replace("：", "-")
         .replace("／", "-")
+        .replace("+", "-")
     )
+    # Strip leading/trailing dashes and multiple dashes for cleaner matching
+    compact = "-".join(part for part in compact.split("-") if part)
     return any(
         compact == mod_id
         or compact.startswith(f"{mod_id}-")
         or compact.endswith(f"-{mod_id}")
         or f"-{mod_id}-" in compact
-        or mod_id in compact
         for mod_id in KNOWN_CLIENT_ONLY_MOD_IDS
     )
 
